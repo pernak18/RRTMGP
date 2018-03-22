@@ -1,5 +1,5 @@
 ! Module: mo_cloud_optics
-
+!
 ! This code is part of
 ! RRTM for GCM Applications - Parallel (RRTMGP)
 !
@@ -11,13 +11,14 @@
 ! Regents of the University of Colorado.  All right reserved.
 !
 ! Use and duplication is permitted under the terms of the
-!    BSD 3-clause license, see http://opensource.org/licenses/BSD-3-Clause
+! BSD 3-clause license, 
+! see http://opensource.org/licenses/BSD-3-Clause
 !
-
+!
 ! Description:
-! This is the interface for routines that receive cloud physical properties
-! and return cloud optical properties by band using Pade formulations. 
-!
+! This is the interface for routines that receive cloud physical 
+! properties and return cloud optical properties by band using
+! Pade formulations. 
 
 module mo_cloud_optics_pade
   use mo_rte_kind,            only: wp
@@ -31,102 +32,111 @@ module mo_cloud_optics_pade
   implicit none
   private
   public :: is_lw
-  public :: stop_on_err, get_dim_length, read_field, create_var, dim_exists, var_exists, write_field
+  public :: stop_on_err, get_dim_length, read_field, create_var, &
+            dim_exists, var_exists, write_field
 
   interface read_field
-    module procedure read_scalar, read_1d_field, read_2d_field, read_3d_field, read_4d_field
+    module procedure read_scalar, read_1d_field, read_2d_field, &
+                     read_3d_field, read_4d_field
   end interface
+
   interface write_field 
     module procedure write_1d_int_field, write_2d_int_field, &
-                     write_1d_field, write_2d_field, write_3d_field, write_4d_field
+                     write_1d_field, write_2d_field, &
+                     write_3d_field, write_4d_field
   end interface 
 
-  !----------------------------------------------------------------------------------------
+!--------------------------------------------------------------------
+! RP comments: 
+!  We will need a load function to add the cloud optics data 
+!  (coefficients or lookup tables); only one function is needed and 
+!  all the types can point to it. 
 !
-! RP comments: 
-!   It's true that ty_gas_optics extends ty_spectral_disc, but this is unique because the gas optics 
-!   actually sets the spectral discretization. Instead we should extend ty_optical_props_1scl, _2str, and _nstr 
-!   from mo_optical_props. 
-!   I don't see a way to avoid extending each with the same data components.
-!   We will need a load function to add the cloud optics data (coefficients or lookup tables); 
-!   only one function is needed and all the types can point to it. 
-!   We will need a compute function that fills in the optical properties arrays (tau/omega0/g or whatever)
-!   validation() will need to be extended to ensure that the cloud optics data are present,  that 
-!   cloud physical and optical properties arrays are allocated, the same size as the tau/omega0/g arrays, ... 
-!   This code can be used generally -- it's just optical properties by band from data -- so maybe call it 
-!   "ty_optics_1scl" etc.? 
-!  
+!  We will need a compute function that fills in the optical 
+!  properties arrays (tau/omega0/g or whatever)
 
+!  validation() will need to be extended to ensure that the cloud 
+!  optics data are present,  that cloud physical and optical 
+!  properties arrays are allocated, the same size as the 
+!  tau/omega0/g arrays, ... 
 
-  type, extends(ty_spectral_disc), public :: ty_cloud_optics_pade
-!    private
+!  This code can be used generally -- it's just optical properties by 
+!  band from data -- so maybe call it "ty_optics_1scl" etc.? 
+!--------------------------------------------------------------------
 
-    ! User input
-    ! Ice surface roughness category - needed for Yang (2013) ice optics parameterization
-    integer :: icergh                                   ! (1 = none, 2 = medium, 3 = high)
+  type, extends(ty_optical_props_1scl), &
+        extends(ty_optical_props_2scl), &
+        extends(ty_optical_props_nscl)
 
-! RP comments: 
-!   Delta scaling should be omitted here. It's available from ty_optical_props_2scl etc 
-    ! Delta-scaling for cloud optical properties (shortwave only)
-    integer :: idelscl                                  ! (0 = no delta-scaling, 1 = with delta-scaling)
+  type, public :: ty_cloud_optics_pade
 
-    ! Cloud physical property dimensions
-    integer :: ncol, nlay
-    ! Cloud physical properties                         ! (ncol,nlay)
-    real(wp), dimension(:,:), allocatable :: cldfrac    ! cloud fraction
-    real(wp), dimension(:,:), allocatable :: ciwp       ! cloud ice water path
-    real(wp), dimension(:,:), allocatable :: clwp       ! cloud liquid water path
-    real(wp), dimension(:,:), allocatable :: rei        ! cloud ice particle effective size (microns)
-    real(wp), dimension(:,:), allocatable :: rel        ! cloud liquid particle effective radius (microns)
+  ! User input
+  ! Ice surface roughness category - needed for Yang (2013) ice 
+  ! optics parameterization (1 = none, 2 = medium, 3 = high)
+  integer :: icergh
 
-! RP comments: 
-!  Cloud optics types shouldn't have hardcoded LW/SW distinctions. Better to have 
-!  explicit wavelength or wavenumber limits on bands provided at initialization. 
-!  compute() should include a variable of ty_spectral_disc as an input argument. If 
-!  the cloud optics variable doesn't know how to provide data on that spectral grid 
-!  an error string should be returned. 
-!  It would also be possible to have a single type that can provide both LW and SW values. 
+  ! RP comments: Delta scaling should be omitted here. It's available
+  ! from ty_optical_props_2scl etc 
+  ! integer :: idelscl
 
-    ! Model input: LUT
-    ! Pade coefficient dimensions
-    integer :: nband_lw,        &
-               nband_sw,        &
-               nrghice
-    integer :: nsizereg,        & 
-               ncoeff_ext,      &
-               ncoeff_ssa_g
-               
-! RP comments: 
-!   Magic numbers are undesirable
-!   Size regimes should be parameterized here: number of regimes, size limits. 
-!   
-               
-    ! Particle size regimes for Pade formulations
-    integer, dimension(2,4) :: pade_sizreg_liqlw, pade_sizreg_icelw
-    integer, dimension(2,4) :: pade_sizreg_liqsw, pade_sizreg_icesw
-    ! Pade cloud coefficients
-    real(wp), dimension(:,:,:  ), allocatable :: pade_extliq
-    real(wp), dimension(:,:,:  ), allocatable :: pade_ssaliq
-    real(wp), dimension(:,:,:  ), allocatable :: pade_asyliq
-    real(wp), dimension(:,:,:,:), allocatable :: pade_extice
-    real(wp), dimension(:,:,:,:), allocatable :: pade_ssaice
-    real(wp), dimension(:,:,:,:), allocatable :: pade_asyice
+  ! Cloud physical properties (dimensions, cloud fraction, cloud ice
+  ! water path, cloud liquid water path, cloud ice effective radius
+  ! (microns), cloud liquid effective radius (microns) )
+  integer :: ncol, nlay
+  real(wp), dimension(:,:), allocatable :: cldfrac
+  real(wp), dimension(:,:), allocatable :: ciwp
+  real(wp), dimension(:,:), allocatable :: clwp
+  real(wp), dimension(:,:), allocatable :: rei
+  real(wp), dimension(:,:), allocatable :: rel
 
-! ------------------------------------------------------------------------------------------
-  contains
+!--------------------------------------------------------------------
 ! RP comments: 
 !  Cloud optics types shouldn't have hardcoded LW/SW distinctions. 
-    generic, public :: init_cldopt  => init_cldopt_lw, init_cldopt_sw
-    generic, public :: cloud_optics => cloud_optics_lw, cloud_optics_sw
-    ! Internal procedures
-    procedure, private :: init_cldopt_lw
-    procedure, private :: init_cldopt_sw
-    procedure, private :: cloud_optics_lw
-    procedure, private :: cloud_optics_sw
-    procedure, private :: get_irad
-    procedure, private :: pade_ext
-    procedure, private :: pade_ssa
-    procedure, private :: pade_asy
+!  Better to have explicit wavelength or wavenumber limits on bands 
+!  provided at initialization. 
+!
+!  compute() should include a variable of ty_spectral_disc as an input 
+!  argument. If the cloud optics variable doesn't know how to provide 
+!  data on that spectral grid an error string should be returned. It 
+!  would also be possible to have a single type that can provide both 
+!  LW and SW values. 
+!--------------------------------------------------------------------
+
+  ! Model input: LUT
+  ! Pade coefficient dimensions
+  integer :: nband, nrghice, nsizereg, ncoeff_ext, ncoeff_ssa_g
+
+! RP comments: 
+!  Magic numbers are undesirable
+!  Size regimes should be parameterized here: number of regimes, size 
+!  limits.
+! Pernak response: not entirely sure how to do this -- via allocation?
+
+  ! Particle size regimes for Pade formulations
+  !integer, dimension(2,4) :: pade_sizreg_liq, pade_sizreg_ice
+  integer, dimension(:,:), allocatable :: pade_sizreg_liq
+  integer, dimension(:,:), allocatable :: pade_sizreg_ice
+
+  ! Pade cloud coefficients
+  real(wp), dimension(:,:,:  ), allocatable :: pade_extliq
+  real(wp), dimension(:,:,:  ), allocatable :: pade_ssaliq
+  real(wp), dimension(:,:,:  ), allocatable :: pade_asyliq
+  real(wp), dimension(:,:,:,:), allocatable :: pade_extice
+  real(wp), dimension(:,:,:,:), allocatable :: pade_ssaice
+  real(wp), dimension(:,:,:,:), allocatable :: pade_asyice
+
+  contains
+
+  generic, public :: init_cldopt  => init_cldopt
+  generic, public :: cloud_optics => cloud_optics
+
+  ! Internal procedures
+  procedure, private :: init_cldopt
+  procedure, private :: cloud_optics
+  procedure, private :: get_irad
+  procedure, private :: pade_ext
+  procedure, private :: pade_ssa
+  procedure, private :: pade_asy
 
   end type ty_cloud_optics_pade
 
