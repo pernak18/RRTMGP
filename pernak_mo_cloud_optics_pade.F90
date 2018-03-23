@@ -46,113 +46,133 @@ module mo_cloud_optics_pade
                      write_3d_field, write_4d_field
   end interface 
 
-!--------------------------------------------------------------------
+!----------------------------------------------------------------------------------------
+!
 ! RP comments: 
+!  It's true that ty_gas_optics extends ty_spectral_disc, but this is 
+!  unique because the gas optics actually sets the spectral
+!  discretization. Instead we should extend ty_optical_props_1scl,
+!  _2str, and _nstr from mo_optical_props. I don't see a way to avoid
+!  extending each with the same data components.
+!
 !  We will need a load function to add the cloud optics data 
 !  (coefficients or lookup tables); only one function is needed and 
 !  all the types can point to it. 
 !
 !  We will need a compute function that fills in the optical 
 !  properties arrays (tau/omega0/g or whatever)
-
+!
 !  validation() will need to be extended to ensure that the cloud 
 !  optics data are present,  that cloud physical and optical 
-!  properties arrays are allocated, the same size as the 
-!  tau/omega0/g arrays, ... 
-
+!  properties arrays are allocated, the same size as the tau/omega0/g
+!  arrays, ... 
+!
 !  This code can be used generally -- it's just optical properties by 
 !  band from data -- so maybe call it "ty_optics_1scl" etc.? 
-!--------------------------------------------------------------------
-
-  type, extends(ty_optical_props_1scl), &
-        extends(ty_optical_props_2scl), &
-        extends(ty_optical_props_nscl)
-
-  type, public :: ty_cloud_optics_pade
-
-  ! User input
-  ! Ice surface roughness category - needed for Yang (2013) ice 
-  ! optics parameterization (1 = none, 2 = medium, 3 = high)
-  integer :: icergh
-
-  ! RP comments: Delta scaling should be omitted here. It's available
-  ! from ty_optical_props_2scl etc 
-  ! integer :: idelscl
-
-  ! Cloud physical properties (dimensions, cloud fraction, cloud ice
-  ! water path, cloud liquid water path, cloud ice effective radius
-  ! (microns), cloud liquid effective radius (microns) )
-  integer :: ncol, nlay
-  real(wp), dimension(:,:), allocatable :: cldfrac
-  real(wp), dimension(:,:), allocatable :: ciwp
-  real(wp), dimension(:,:), allocatable :: clwp
-  real(wp), dimension(:,:), allocatable :: rei
-  real(wp), dimension(:,:), allocatable :: rel
-
-!--------------------------------------------------------------------
-! RP comments: 
-!  Cloud optics types shouldn't have hardcoded LW/SW distinctions. 
-!  Better to have explicit wavelength or wavenumber limits on bands 
-!  provided at initialization. 
 !
-!  compute() should include a variable of ty_spectral_disc as an input 
-!  argument. If the cloud optics variable doesn't know how to provide 
-!  data on that spectral grid an error string should be returned. It 
-!  would also be possible to have a single type that can provide both 
-!  LW and SW values. 
+!  Pernak: for now, i only have a ty_optics_1scl type extension, and 
+!  the others would just be a copy and paste with changes to the type
+!  name. until i understand this better, we will not have the 
+!  flexibility to extend to 2- and n-stream
 !--------------------------------------------------------------------
 
-  ! Model input: LUT
-  ! Pade coefficient dimensions
-  integer :: nband, nrghice, nsizereg, ncoeff_ext, ncoeff_ssa_g
+  type, extends(ty_optical_props_1scl), public :: ty_optics_1scl
 
-! RP comments: 
-!  Magic numbers are undesirable
-!  Size regimes should be parameterized here: number of regimes, size 
-!  limits.
-! Pernak response: not entirely sure how to do this -- via allocation?
+    ! User input
+    ! Ice surface roughness category - needed for Yang (2013) ice 
+    ! optics parameterization (1 = none, 2 = medium, 3 = high)
+    integer :: icergh
 
-  ! Particle size regimes for Pade formulations
-  !integer, dimension(2,4) :: pade_sizreg_liq, pade_sizreg_ice
-  integer, dimension(:,:), allocatable :: pade_sizreg_liq
-  integer, dimension(:,:), allocatable :: pade_sizreg_ice
+    ! Cloud physical properties (dimensions, cloud fraction, cloud ice
+    ! water path, cloud liquid water path, cloud ice effective radius
+    ! (microns), cloud liquid effective radius (microns) )
+    integer :: ncol, nlay
+    real(wp), dimension(:,:), allocatable :: cldfrac
+    real(wp), dimension(:,:), allocatable :: ciwp
+    real(wp), dimension(:,:), allocatable :: clwp
+    real(wp), dimension(:,:), allocatable :: rei
+    real(wp), dimension(:,:), allocatable :: rel
 
-  ! Pade cloud coefficients
-  real(wp), dimension(:,:,:  ), allocatable :: pade_extliq
-  real(wp), dimension(:,:,:  ), allocatable :: pade_ssaliq
-  real(wp), dimension(:,:,:  ), allocatable :: pade_asyliq
-  real(wp), dimension(:,:,:,:), allocatable :: pade_extice
-  real(wp), dimension(:,:,:,:), allocatable :: pade_ssaice
-  real(wp), dimension(:,:,:,:), allocatable :: pade_asyice
+    !-----------------------------------------------------------------
+    ! RP comments: 
+    !  Cloud optics types shouldn't have hardcoded LW/SW distinctions. 
+    !  Better to have explicit wavelength or wavenumber limits on 
+    !  bands provided at initialization. 
+    !
+    !  compute() should include a variable of ty_spectral_disc as an 
+    !  input argument. If the cloud optics variable doesn't know how 
+    !  to provide data on that spectral grid an error string should 
+    !  be returned. It would also be possible to have a single type 
+    !  that can provide both LW and SW values. 
+    !-----------------------------------------------------------------
 
+    ! Model input: LUT
+    ! Pade coefficient dimensions
+    integer :: nband, nrghice, nsizereg, ncoeff_ext, ncoeff_ssa_g
+
+    ! RP comments: 
+    !  Magic numbers are undesirable
+    !  Size regimes should be parameterized here: number of regimes, 
+    !  size limits.
+    !  Pernak response: not entirely sure how to do this -- via
+    !    allocation?
+
+    ! Particle size regimes for Pade formulations
+    !integer, dimension(2,4) :: pade_sizreg_liq, pade_sizreg_ice
+    !integer, dimension(:,:) :: pade_sizreg_liq, pade_sizreg_ice
+    integer, dimension(:,:), allocatable :: pade_sizreg_liq_g, &
+                                            pade_sizreg_liq_tau
+    integer, dimension(:,:), allocatable :: pade_sizreg_ice_g
+                                            pade_sizreg_ice_tau
+
+    ! Pade cloud coefficients
+    real(wp), dimension(:,:,:  ), allocatable :: pade_extliq
+    real(wp), dimension(:,:,:  ), allocatable :: pade_ssaliq
+    real(wp), dimension(:,:,:  ), allocatable :: pade_asyliq
+    real(wp), dimension(:,:,:,:), allocatable :: pade_extice
+    real(wp), dimension(:,:,:,:), allocatable :: pade_ssaice
+    real(wp), dimension(:,:,:,:), allocatable :: pade_asyice
+
+    contains
+
+    generic, public :: init_cldopt  => init_cldopt
+    generic, public :: cloud_optics => cloud_optics
+
+    ! Internal procedures
+    procedure, private :: init_cldopt
+    procedure, private :: cloud_optics
+    procedure, private :: get_irad
+    procedure, private :: pade_ext
+    procedure, private :: pade_ssa
+    procedure, private :: pade_asy
+
+  end type ty_optics_1scl
+
+  ! mo_cloud_optics_pade attributes and methods
   contains
 
-  generic, public :: init_cldopt  => init_cldopt
-  generic, public :: cloud_optics => cloud_optics
-
-  ! Internal procedures
-  procedure, private :: init_cldopt
-  procedure, private :: cloud_optics
-  procedure, private :: get_irad
-  procedure, private :: pade_ext
-  procedure, private :: pade_ssa
-  procedure, private :: pade_asy
-
-  end type ty_cloud_optics_pade
-
-  contains
-  !--------------------------------------------------------------------------------------------------------------------
+  !-------------------------------------------------------------------
   !
   ! Cloud optics initialization 
   !
+  !-------------------------------------------------------------------
+
+  ! Initialize object based on data read from netCDF file however the 
+  ! user desires. Pade coefficient data used for longwave cloud 
+  ! property conversion
+
   !--------------------------------------------------------------------------------------------------------------------
-  ! Initialize object based on data read from netCDF file however the user desires. 
-  !   Pade coefficient data used for longwave cloud property conversion
-  ! 
-  function init_cldopt_lw(cloud_spec, cld_coeff_file, is_lw) result(error_msg)
+  !
+  ! Ancillary functions
+  !
+  !--------------------------------------------------------------------------------------------------------------------
+  !---------------------------------------------------------------------------
+
+  function init_cldopt(cloud_spec, cld_coeff_file, is_lw) &
+    result(error_msg)
 
     ! Pade
-    class(ty_cloud_optics_pade), intent(inout) :: cloud_spec
+    class(ty_optics_1scl), intent(inout) :: cloud_spec
 
     ! Cloud coefficient optical property input file - Pade
     character(len=*), intent(in) :: cld_coeff_file
@@ -161,714 +181,108 @@ module mo_cloud_optics_pade
 
     character(len = 128) error_msg
 
-    ! -----------------
     ! Local variables
-    integer :: ncid
-    integer :: nband_lw
-    integer :: nrghice
-    integer :: nsizereg
-    integer :: ncoeff_ext
-    integer :: ncoeff_ssa_g
-! RP comments: 
-!  The limits of the size regimes are data and should be provided the same way the Pade coefficients are. 
-!  A axis of dimension 2 is confusing; better to have different variables (pade_sizreg_liq_g, pade_sizreg_liq_tau)
-!  A possible refinement: having the same size regimes for 
- 
-    ! Particle size regimes for Pade formulations
-    cloud_spec%pade_sizreg_liqlw(1,:) = (/2,10,35,60/)         ! for ext, ssa
-    cloud_spec%pade_sizreg_liqlw(2,:) = (/2,8,20,60/)          ! for asy
-    cloud_spec%pade_sizreg_icelw(1,:) = (/10,20,30,180/)       ! for all, except ssa, asy when icergh=0.00
-    cloud_spec%pade_sizreg_icelw(2,:) = (/10,20,50,180/)       ! for ssa, asy, icergh=0.00
+    integer :: ncid, nband, nrghice, nsizereg, &
+      ncoeff_ext, ncoeff_ssa_g
+    integer, dimension(:,:), allocatable :: pade_sizreg_liq_g, &
+                                            pade_sizreg_liq_tau
+    integer, dimension(:,:), allocatable :: pade_sizreg_ice_g
+                                            pade_sizreg_ice_tau
 
-    ! -----------------
-! RP comments: 
-!  Types should be initialzed with data directly. No I/O in code we will distribute. 
-!  See the initialization of gas_optics
+    ! Particle size regimes for Pade formulations
+    cloud_spec%pade_sizreg_liq_g(:) = (/2,10,35,60/)
+    cloud_spec%pade_sizreg_ice_g(:) = (/10,20,30,180/)
+
+    if (is_lw) then
+      cloud_spec%pade_sizreg_liq_tau(:) = (/2,8,20,60/)
+      cloud_spec%pade_sizreg_ice_tau(:) = (/10,20,50,180/)
+    else
+      cloud_spec%pade_sizreg_liq_tau(:) = (/2,0,20,60/)
+      cloud_spec%pade_sizreg_ice_tau(:) = (/10,20,30,180/)
+    endif
+
+    ! RP comments: 
+    !  Types should be initialzed with data directly. 
+    !  No I/O in code we will distribute. 
+    !  See the initialization of gas_optics
+    !  Pernak: doing this here with some other attribute assignments
+    !cloud_spec%ncol = ...
+    !cloud_spec%nlayers = ...
+    !cloud_spec%nband = nband ! defined later... 
+    !cloud_spec%is_lw = is_lw
+    !cloud_spec%cldfrac = ... ! cloud fraction (ncol x nlayers)
+    !cloud_spec%clwp = ... ! cloud liquid water path (ncol x nlayers)
+    !cloud_spec%ciwp = ... ! cloud ice water path (ncol x nlayers)
+    !cloud_spec%rel = ... ! cloud liquid particle effective 
+                          ! radius (microns), (ncol x nlayers)
+    !cloud_spec%rei = ... ! cloud ice particle effective 
+                          ! radius (microns), (ncol x nlayers)
 
     error_msg = ""
 
     ! Open cloud optical property coefficient file
-    if(nf90_open(trim(cld_coeff_file), NF90_WRITE, ncid) /= NF90_NOERR) & 
-       call stop_on_err("init_cldopt_lw(): can't open file " // trim(cld_coeff_file))
+    if (nf90_open(trim(cld_coeff_file), NF90_WRITE, ncid) &
+        /= NF90_NOERR) & call stop_on_err(&
+        "init_cldopt: can't open file " // trim(cld_coeff_file))
 
-    cloud_spec%nband_lw     = get_dim_length(ncid,'nband_lw') 
-    cloud_spec%nrghice      = get_dim_length(ncid,'nrghice') 
-    cloud_spec%nsizereg     = get_dim_length(ncid,'nsizereg') 
-    cloud_spec%ncoeff_ext   = get_dim_length(ncid,'ncoeff_ext') 
-    cloud_spec%ncoeff_ssa_g = get_dim_length(ncid,'ncoeff_ssa_g') 
+    ! read in array dimensions
+    nband        = get_dim_length(ncid, 'nband') 
+    nrghice      = get_dim_length(ncid, 'nrghice') 
+    nsizereg     = get_dim_length(ncid, 'nsizereg') 
+    ncoeff_ext   = get_dim_length(ncid, 'ncoeff_ext') 
+    ncoeff_ssa_g = get_dim_length(ncid, 'ncoeff_ssa_g') 
 
-    nband_lw     = cloud_spec%nband_lw
-    nrghice      = cloud_spec%nrghice
-    nsizereg     = cloud_spec%nsizereg
-    ncoeff_ext   = cloud_spec%ncoeff_ext
-    ncoeff_ssa_g = cloud_spec%ncoeff_ssa_g
+    ! create new object attributes and populate array dimensions
+    cloud_spec%nband        = nband
+    cloud_spec%nrghice      = nrghice
+    cloud_spec%nsizereg     = nsizereg
+    cloud_spec%ncoeff_ext   = ncoeff_ext
+    cloud_spec%ncoeff_ssa_g = ncoeff_ssa_g
 
     ! Allocate cloud property Pade coefficient input arrays
-    allocate(cloud_spec%pade_extliq(nband_lw, nsizereg, ncoeff_ext))
-    allocate(cloud_spec%pade_ssaliq(nband_lw, nsizereg, ncoeff_ssa_g))
-    allocate(cloud_spec%pade_asyliq(nband_lw, nsizereg, ncoeff_ssa_g))
-    allocate(cloud_spec%pade_extice(nband_lw, nsizereg, ncoeff_ext, nrghice))
-    allocate(cloud_spec%pade_ssaice(nband_lw, nsizereg, ncoeff_ssa_g, nrghice))
-    allocate(cloud_spec%pade_asyice(nband_lw, nsizereg, ncoeff_ssa_g, nrghice))
+    allocate(cloud_spec%pade_extliq(nband, nsizereg, ncoeff_ext))
+    allocate(cloud_spec%pade_ssaliq(nband, nsizereg, ncoeff_ssa_g))
+    allocate(cloud_spec%pade_asyliq(nband, nsizereg, ncoeff_ssa_g))
+    allocate(cloud_spec%pade_extice(nband, nsizereg, ncoeff_ext, &
+      nrghice))
+    allocate(cloud_spec%pade_ssaice(nband, nsizereg, ncoeff_ssa_g, &
+      nrghice))
+    allocate(cloud_spec%pade_asyice(nband, nsizereg, ncoeff_ssa_g, &
+      nrghice))
 
-    cloud_spec%pade_extliq  = read_field(ncid, 'pade_extliq_lw', nband_lw, nsizereg, ncoeff_ext) 
-    cloud_spec%pade_ssaliq  = read_field(ncid, 'pade_ssaliq_lw', nband_lw, nsizereg, ncoeff_ssa_g) 
-    cloud_spec%pade_asyliq  = read_field(ncid, 'pade_asyliq_lw', nband_lw, nsizereg, ncoeff_ssa_g) 
-    cloud_spec%pade_extice  = read_field(ncid, 'pade_extice_lw', nband_lw, nsizereg, ncoeff_ext, nrghice) 
-    cloud_spec%pade_ssaice  = read_field(ncid, 'pade_ssaice_lw', nband_lw, nsizereg, ncoeff_ssa_g, nrghice) 
-    cloud_spec%pade_asyice  = read_field(ncid, 'pade_asyice_lw', nband_lw, nsizereg, ncoeff_ssa_g, nrghice) 
+    ! more object attributes: parameter arrays
+    cloud_spec%pade_extliq  = read_field(ncid, 'pade_extliq', &
+      nband, nsizereg, ncoeff_ext) 
+    cloud_spec%pade_ssaliq  = read_field(ncid, 'pade_ssaliq', &
+      nband, nsizereg, ncoeff_ssa_g) 
+    cloud_spec%pade_asyliq  = read_field(ncid, 'pade_asyliq', &
+      nband, nsizereg, ncoeff_ssa_g) 
+    cloud_spec%pade_extice  = read_field(ncid, 'pade_extice', &
+      nband, nsizereg, ncoeff_ext, nrghice) 
+    cloud_spec%pade_ssaice  = read_field(ncid, 'pade_ssaice', &
+      nband, nsizereg, ncoeff_ssa_g, nrghice) 
+    cloud_spec%pade_asyice  = read_field(ncid, 'pade_asyice', &
+      nband, nsizereg, ncoeff_ssa_g, nrghice) 
 
     ncid = nf90_close(ncid) 
 
-  end function init_cldopt_lw
+  end function init_cldopt
 
-  !--------------------------------------------------------------------------------------------------------------------
-  ! Initialize object based on data read from netCDF file however the user desires. 
-  !   Pade coefficient data used for shortwave cloud property conversion
-  ! 
-  function init_cldopt_sw(cloud_spec, cld_coeff_file) result(error_msg)
-
-    ! Pade
-    class(ty_cloud_optics_pade), intent(inout) :: cloud_spec
-
-    ! Cloud coefficient optical property input file - Pade
-    character(len=*), intent(in) :: cld_coeff_file
-
-    character(len = 128) error_msg
-
-    ! -----------------
-    ! Local variables
-    integer :: ncid
-    integer :: nband_sw
-    integer :: nrghice
-    integer :: nsizereg
-    integer :: ncoeff_ext
-    integer :: ncoeff_ssa_g
-
-    ! Particle size regimes for Pade formulations
-    cloud_spec%pade_sizreg_liqsw(1,:) = (/2,10,35,60/)         ! for ext, ssa
-    cloud_spec%pade_sizreg_liqsw(2,:) = (/2,9,20,60/)          ! for asy
-    cloud_spec%pade_sizreg_icesw(1,:) = (/10,20,30,180/)       ! for ext, ssa
-    cloud_spec%pade_sizreg_icesw(2,:) = (/10,20,30,180/)       ! for asy
-
-    ! -----------------
-    error_msg = ""
-
-    ! Open cloud optical property coefficient file
-    if(nf90_open(trim(cld_coeff_file), NF90_WRITE, ncid) /= NF90_NOERR) & 
-       call stop_on_err("init_cldopt_sw(): can't open file " // trim(cld_coeff_file))
-
-    cloud_spec%nband_sw     = get_dim_length(ncid,'nband_sw') 
-    cloud_spec%nrghice      = get_dim_length(ncid,'nrghice') 
-    cloud_spec%nsizereg     = get_dim_length(ncid,'nsizereg') 
-    cloud_spec%ncoeff_ext   = get_dim_length(ncid,'ncoeff_ext') 
-    cloud_spec%ncoeff_ssa_g = get_dim_length(ncid,'ncoeff_ssa_g') 
-
-    nband_sw     = cloud_spec%nband_sw
-    nrghice      = cloud_spec%nrghice
-    nsizereg     = cloud_spec%nsizereg
-    ncoeff_ext   = cloud_spec%ncoeff_ext
-    ncoeff_ssa_g = cloud_spec%ncoeff_ssa_g
-
-    ! Allocate cloud property Pade coefficient input arrays
-    allocate(cloud_spec%pade_extliq(nband_sw, nsizereg, ncoeff_ext))
-    allocate(cloud_spec%pade_ssaliq(nband_sw, nsizereg, ncoeff_ssa_g))
-    allocate(cloud_spec%pade_asyliq(nband_sw, nsizereg, ncoeff_ssa_g))
-    allocate(cloud_spec%pade_extice(nband_sw, nsizereg, ncoeff_ext, nrghice))
-    allocate(cloud_spec%pade_ssaice(nband_sw, nsizereg, ncoeff_ssa_g, nrghice))
-    allocate(cloud_spec%pade_asyice(nband_sw, nsizereg, ncoeff_ssa_g, nrghice))
-
-    cloud_spec%pade_extliq  = read_field(ncid, 'pade_extliq_sw', nband_sw, nsizereg, ncoeff_ext) 
-    cloud_spec%pade_ssaliq  = read_field(ncid, 'pade_ssaliq_sw', nband_sw, nsizereg, ncoeff_ssa_g) 
-    cloud_spec%pade_asyliq  = read_field(ncid, 'pade_asyliq_sw', nband_sw, nsizereg, ncoeff_ssa_g) 
-    cloud_spec%pade_extice  = read_field(ncid, 'pade_extice_sw', nband_sw, nsizereg, ncoeff_ext, nrghice) 
-    cloud_spec%pade_ssaice  = read_field(ncid, 'pade_ssaice_sw', nband_sw, nsizereg, ncoeff_ssa_g, nrghice) 
-    cloud_spec%pade_asyice  = read_field(ncid, 'pade_asyice_sw', nband_sw, nsizereg, ncoeff_ssa_g, nrghice) 
-
-    ncid = nf90_close(ncid) 
-
-  end function init_cldopt_sw
-
-  ! ------------------------------------------------------------------------------
+  ! -----------------------------------------------------------------
   !
-  ! Derive LW cloud optical properties from provided cloud physical pproperties
+  ! Derive LW cloud optical properties from provided cloud 
+  ! physical pproperties
   !
-  ! ------------------------------------------------------------------------------
-  function cloud_optics_lw( &
-  ! Input
-! RP comments: the cloud physical properties and their dimensions should either be 
-!   part of the type data (they're included above) or they should be arguments to this 
-!   routine, but not both. 
-!   Use "this" convection as elsewhere in RRTMGP to refer to the object being called. 
-!   If ty_optics_1scl descends from ty_optical_props_1scl there won't be an output argument - 
-!     the optical properties will go in this%tau etc. 
+  ! -----------------------------------------------------------------
 
-! Outstanding question: compute, increment vs. directly calling increment() ? 
-!   Maybe that's an argument for passing arguments to routines. 
-!   
+  ! the load function Robert requested
+  function load_cloud_optics()
+  end function load_cloud_optics
 
-                   cloud_spec, &
-                   ncol, nlayers, nbndlw, is_lw, &
-                   cldfrac, clwp, ciwp, rel, rei, &
-  ! Output
-                   cloud_optical_props) &
-                   result(error_msg)
-  ! ------------------------------------------------------------------------------
+  ! the compute function Robert requested
+  function calc_optical_props()
+  end function calc_optical_props
 
-  ! Purpose:  Compute the cloud optical properties for each cloudy layer.
-
-  ! ------- Input -------
-
-      class(ty_cloud_optics_pade), intent(inout) :: cloud_spec
-                                                 ! cloud specification data
-      integer, intent(in) :: ncol                ! total number of columns
-      integer, intent(in) :: nlayers             ! total number of layers
-      integer, intent(in) :: nbndlw              ! number of LW bands
-
-      logical, intent(in) :: is_lw
-
-      real(wp), intent(in) :: cldfrac(:,:)       ! cloud fraction
-                                                 !    Dimensions: (ncol,nlayers)
-      real(wp), intent(in) :: ciwp(:,:)          ! cloud ice water path
-                                                 !    Dimensions: (ncol,nlayers)
-      real(wp), intent(in) :: clwp(:,:)          ! cloud liquid water path
-                                                 !    Dimensions: (ncol,nlayers)
-      real(wp), intent(in) :: rei(:,:)           ! cloud ice particle effective size (microns)
-                                                 !    Dimensions: (ncol,nlayers)
-      real(wp), intent(in) :: rel(:,:)           ! cloud liquid particle effective radius (microns)
-                                                 !    Dimensions: (ncol,nlayers)
-
-! ------- Output -------
-      class(ty_cloud_optical_props_arry), intent(inout) :: cloud_optical_props
-                                                 ! Dimensions: (ncol,nlayers,nbndlw)
-
-! ------- Local -------
-
-      character(len=128)    :: error_msg
-
-      real(wp) :: p_e(6)                         ! Local pade coefficients for extinction
-      real(wp) :: p(5)                           ! Local pade coefficients for ssa and g
-
-      real(wp) :: cwp                            ! cloud water path (liquid + ice)
-      real(wp), parameter :: cldmin = 1.e-20     ! minimum value for cloud quantities
-      real(wp) :: radliq                         ! cloud liquid droplet radius (microns)
-      real(wp) :: radice                         ! cloud ice effective size (microns)
-      real(wp) :: factor                         ! 
-      real(wp) :: fint                           ! 
-
-      integer :: index                           !
-      integer :: icol, ilyr, ibnd                !
-      integer :: irad, irade, irads, iradg       !
-      integer :: icergh                          ! ice surface roughness
-                                                 ! (1 = none, 2 = medium, 3 = high)
-
-      real(wp) :: extliq_lw(nlayers,nbndlw)      ! LW liquid extinction coefficient
-      real(wp) :: ssaliq_lw(nlayers,nbndlw)      ! LW liquid single scattering albedo
-      real(wp) :: asyliq_lw(nlayers,nbndlw)      ! LW liquid asymmetry parameter
-
-      real(wp) :: extice_lw(nlayers,nbndlw)      ! LW ice extinction coefficients
-      real(wp) :: ssaice_lw(nlayers,nbndlw)      ! LW ice single scattering albedo
-      real(wp) :: asyice_lw(nlayers,nbndlw)      ! LW ice asymmetry parameter
-
-      real(wp) :: tauliq_lw                      ! LW liquid cloud extinction optical depth - no delta scaling
-      real(wp) :: tauice_lw                      ! LW ice cloud extinction optical depth - no delta scaling
-
-      real(wp) :: scatice                        ! Ice scattering term
-      real(wp) :: scatliq                        ! Liquid scattering term
-
-      real(wp) :: asycld                         ! LW asymmetry parameter - local
-
-! ------- Definitions -------
-
-! ------- Error checking -------
-      error_msg = ''
-      icergh = cloud_spec%icergh
-      if (icergh < 1 .or. icergh > 3) then
-         error_msg = 'cloud optics: cloud ice surface roughness flag is out of bounds'
-         return
-      endif
-
-! RP comments: 
-!   As per all other RRTMGP examples, the validity of input data should be checked 
-!   outside the computational loop. That means checking that sizes are in range, 
-!   values are positive, etc. 
-!   One could also compute a logical "cloud present" mask in this loop and use it below.  
-!   
-!   No magic numbers. When checking validity of e.g. size refer to the size regime arrays. 
-
-! RP comments
-!   Some (many?) of these values will be replaced. Better to use merge() in loops below. 
-!
-! Initialize
-      extliq_lw(:,:) = 0.0_wp
-      ssaliq_lw(:,:) = 1.0_wp
-      asyliq_lw(:,:) = 0.0_wp
-      extice_lw(:,:) = 0.0_wp
-      ssaice_lw(:,:) = 1.0_wp
-      asyice_lw(:,:) = 0.0_wp
-
-      select type(cloud_optical_props)
-        type is (ty_cloud_optical_props_1scl)
-          cloud_optical_props%taucld(:,:,:) = 0.0_wp
-        type is (ty_cloud_optical_props_2str)
-          cloud_optical_props%taucld(:,:,:) = 0.0_wp
-          cloud_optical_props%ssacld(:,:,:) = 1.0_wp
-          cloud_optical_props%asycld(:,:,:) = 0.0_wp
-        type is (ty_cloud_optical_props_nstr)
-          cloud_optical_props%taucld(:,:,:) = 0.0_wp
-          cloud_optical_props%ssacld(:,:,:) = 1.0_wp
-          cloud_optical_props%pcld(:,:,:,:) = 0.0_wp
-      end select
-
-! Main column loop
-   do icol = 1, ncol
-
-! Cloud optical properties from Pade coefficients
-
-      do ilyr = 1, nlayers
-         cwp = ciwp(icol,ilyr) + clwp(icol,ilyr)
-         if (cldfrac(icol,ilyr) .gt. cldmin .and. cwp .gt. cldmin) then 
-! Derive optical properties from Pade functions 
-! Original Pade formulations for EXT, SSA, G
-
-! Liquid - LW
-            radliq = rel(icol,ilyr)
-            if (radliq .gt. 0.0_wp .and. clwp(icol,ilyr) .gt. 0.0_wp) then 
-! For liquid OP, particle size is limited to 2.5 to 20.0 microns
-               if (radliq .lt. 2.5_wp .or. radliq .gt. 20.0_wp) then 
-                  error_msg = 'cloud optics: liquid effective radius is out of bounds'
-                  return
-               endif
-! Define coefficient particle size regime for current size: extinction, ssa
-               irade = cloud_spec%get_irad(radliq, 'liq', 'lw', 'ext')
-               irads = cloud_spec%get_irad(radliq, 'liq', 'lw', 'ssa')
-               iradg = cloud_spec%get_irad(radliq, 'liq', 'lw', 'asy')
-
-!
-! RP comments: copying coefficents is inefficient. Why not use coefficients directly? 
-!   extliq_lw(ilyr,ibnd) = cloud_spec%pade_ext(cloud_spec%pade_extliq(ibnd,irade,:), radliq)
-
-               do ibnd = 1, nbndlw
-                  p_e(:) = cloud_spec%pade_extliq(ibnd,irade,:)
-                  extliq_lw(ilyr,ibnd) = cloud_spec%pade_ext(p_e, radliq)
-                  p(:) = cloud_spec%pade_ssaliq(ibnd,irads,:)
-                  ssaliq_lw(ilyr,ibnd) = cloud_spec%pade_ssa(p, radliq)
-                  p(:) = cloud_spec%pade_asyliq(ibnd,iradg,:)
-                  asyliq_lw(ilyr,ibnd) = cloud_spec%pade_asy(p, radliq)
-               enddo
-            endif
-
-! Ice - LW
-            radice = rei(icol,ilyr)
-            if (radice .gt. 0.0_wp .and. ciwp(icol,ilyr) .gt. 0.0_wp) then 
-! For Yang (2013) ice OP, particle size is limited to 10.0 to 180.0 microns
-               if (radice .lt. 10.0_wp .or. radice .gt. 180.0_wp) then
-                  error_msg = 'cloud optics: ice effective radius is out of bounds'
-                  return
-               endif
-! Define coefficient particle size regime for current size: extinction, ssa
-               irade = cloud_spec%get_irad(radice, 'ice', 'lw', 'ext')
-               irads = cloud_spec%get_irad(radice, 'ice', 'lw', 'ssa')
-               iradg = cloud_spec%get_irad(radice, 'ice', 'lw', 'asy')
-
-
-               do ibnd = 1, nbndlw
-! Derive optical properties for selected ice roughness
-
-! RP comments: 
-!  As far as I can tell the case() statement here doesn't have an effect: 
-!   the coefficients are determined by the value of icergh
-                  select case (icergh)
-
-! No ice roughness 
-                  case(1)
-                     p_e(:) = cloud_spec%pade_extice(ibnd,irade,:,icergh)
-                     extice_lw(ilyr,ibnd) = cloud_spec%pade_ext(p_e, radice)
-                     p(:) = cloud_spec%pade_ssaice(ibnd,irads,:,icergh)
-                     ssaice_lw(ilyr,ibnd) = cloud_spec%pade_ssa(p, radice)
-                     p(:) = cloud_spec%pade_asyice(ibnd,iradg,:,icergh)
-                     asyice_lw(ilyr,ibnd) = cloud_spec%pade_asy(p, radice)
-
-! Medium ice roughness 
-                  case(2)
-                     p_e(:) = cloud_spec%pade_extice(ibnd,irade,:,icergh)
-                     extice_lw(ilyr,ibnd) = cloud_spec%pade_ext(p_e, radice)
-                     p(:) = cloud_spec%pade_ssaice(ibnd,irads,:,icergh)
-                     ssaice_lw(ilyr,ibnd) = cloud_spec%pade_ssa(p, radice)
-                     p(:) = cloud_spec%pade_asyice(ibnd,iradg,:,icergh)
-                     asyice_lw(ilyr,ibnd) = cloud_spec%pade_asy(p, radice)
-
-! High ice roughness 
-                  case(3)
-                     p_e(:) = cloud_spec%pade_extice(ibnd,irade,:,icergh)
-                     extice_lw(ilyr,ibnd) = cloud_spec%pade_ext(p_e, radice)
-                     p(:) = cloud_spec%pade_ssaice(ibnd,irads,:,icergh)
-                     ssaice_lw(ilyr,ibnd) = cloud_spec%pade_ssa(p, radice)
-                     p(:) = cloud_spec%pade_asyice(ibnd,iradg,:,icergh)
-                     asyice_lw(ilyr,ibnd) = cloud_spec%pade_asy(p, radice)
-
-                  end select
-               enddo
-            endif
-         endif
-! End layer loop
-      enddo
-
-! End column loop
-   enddo
-
-! Combine liquid and ice contributions into total cloud optical properties
-   do icol = 1, ncol
-      do ilyr = 1, nlayers
-         cwp = ciwp(icol,ilyr) + clwp(icol,ilyr)
-         if (cldfrac(icol,ilyr) .gt. cldmin .and. cwp .gt. cldmin) then 
-! Longwave
-         do ibnd = 1, nbndlw
-            tauice_lw = ciwp(icol,ilyr) * extice_lw(ilyr,ibnd)
-            tauliq_lw = clwp(icol,ilyr) * extliq_lw(ilyr,ibnd)
-
-            if (tauice_lw == 0.0_wp .and. tauliq_lw == 0.0_wp) then
-               error_msg = 'cloud optics: longwave cloud optical depth is zero'
-               return
-            endif
-
-            scatice = ssaice_lw(ilyr,ibnd) * tauice_lw
-            scatliq = ssaliq_lw(ilyr,ibnd) * tauliq_lw
-
-! No delta-scaling
-            select type(cloud_optical_props)
-              type is (ty_cloud_optical_props_1scl)
-                cloud_optical_props%taucld(icol,ilyr,ibnd) = tauice_lw + tauliq_lw
-              type is (ty_cloud_optical_props_2str)
-                cloud_optical_props%taucld(icol,ilyr,ibnd) = tauice_lw + tauliq_lw
-                cloud_optical_props%ssacld(icol,ilyr,ibnd) = (scatice + scatliq) / &
-                                      cloud_optical_props%taucld(icol,ilyr,ibnd)
-                cloud_optical_props%asycld(icol,ilyr,ibnd) = &
-                     (scatice * asyice_lw(ilyr,ibnd) + scatliq * asyliq_lw(ilyr,ibnd)) / &
-                     (scatice + scatliq)
-              type is (ty_cloud_optical_props_nstr)
-                if (clwp(icol,ilyr) .gt. 0.0_wp) then 
-                   error_msg = 'cloud optics: n-stream option not available in longwave for liquid clouds'
-                   return
-                else
-                  cloud_optical_props%taucld(icol,ilyr,ibnd) = tauice_lw + tauliq_lw
-                  cloud_optical_props%ssacld(icol,ilyr,ibnd) = (scatice + scatliq) / &
-                                        cloud_optical_props%taucld(icol,ilyr,ibnd)
-                  asycld = &
-                       (scatice * asyice_lw(ilyr,ibnd) + scatliq * asyliq_lw(ilyr,ibnd)) / &
-                       (scatice + scatliq)
-                  cloud_optical_props%pcld(1,icol,ilyr,ibnd) = 1.0_wp
-                  cloud_optical_props%pcld(2,icol,ilyr,ibnd) = asycld
-                  cloud_optical_props%pcld(3,icol,ilyr,ibnd) = asycld**2
-                endif
-            end select
-
-         enddo
-
-         endif
-      enddo
-   enddo
-
-  end function cloud_optics_lw
-
-  ! ------------------------------------------------------------------------------
-  !
-  ! Derive SW cloud optical properties from provided cloud physical pproperties
-  !
-  ! ------------------------------------------------------------------------------
-  function cloud_optics_sw( &
-  ! Input
-                   cloud_spec, &
-                   ncol, nlayers, nbndsw, &
-                   cldfrac, clwp, ciwp, rel, rei, &
-  ! Output
-                   cloud_optical_props) &
-                   result(error_msg)
-  ! ------------------------------------------------------------------------------
-
-  ! Purpose:  Compute the cloud optical properties for each cloudy layer.
-
-  ! ------- Input -------
-
-      class(ty_cloud_optics_pade), intent(inout) :: cloud_spec
-                                                 ! cloud specification data
-      integer, intent(in) :: ncol                ! total number of columns
-      integer, intent(in) :: nlayers             ! total number of layers
-      integer, intent(in) :: nbndsw              ! number of SW bands
-
-      real(wp), intent(in) :: cldfrac(:,:)       ! cloud fraction
-                                                 !    Dimensions: (ncol,nlayers)
-      real(wp), intent(in) :: ciwp(:,:)          ! cloud ice water path
-                                                 !    Dimensions: (ncol,nlayers)
-      real(wp), intent(in) :: clwp(:,:)          ! cloud liquid water path
-                                                 !    Dimensions: (ncol,nlayers)
-      real(wp), intent(in) :: rei(:,:)           ! cloud ice particle effective size (microns)
-                                                 !    Dimensions: (ncol,nlayers)
-      real(wp), intent(in) :: rel(:,:)           ! cloud liquid particle effective radius (microns)
-                                                 !    Dimensions: (ncol,nlayers)
-
-! ------- Output -------
-      class(ty_cloud_optical_props_arry), intent(inout) :: cloud_optical_props
-                                                 ! Dimensions: (ncol,nlayers,nbndlw)
-
-! ------- Local -------
-
-      character(len=128)    :: error_msg
-
-      real(wp) :: p_e(6)                         ! Local pade coefficients for extinction
-      real(wp) :: p(5)                           ! Local pade coefficients for ssa and g
-
-      real(wp) :: cwp                            ! cloud water path (liquid + ice)
-      real(wp), parameter :: cldmin = 1.e-20     ! minimum value for cloud quantities
-      real(wp) :: radliq                         ! cloud liquid droplet radius (microns)
-      real(wp) :: radice                         ! cloud ice effective size (microns)
-      real(wp) :: factor                         ! 
-      real(wp) :: fint                           ! 
-
-      integer :: index                           !
-      integer :: icol, ilyr, ibnd                !
-      integer :: irad, irade, irads, iradg       !
-      integer :: icergh                          ! ice surface roughness
-                                                 ! (1 = none, 2 = medium, 3 = high)
-      integer :: idelscl                         ! delta-scaling of output
-                                                 ! (0 = no delta-scaling, 1 = with delta-scaling)
-
-      real(wp) :: extliq_sw(nlayers,nbndsw)      ! SW liquid extinction coefficients
-      real(wp) :: ssaliq_sw(nlayers,nbndsw)      ! SW liquid single scattering albedo
-      real(wp) :: asyliq_sw(nlayers,nbndsw)      ! SW liquid asymmetry parameter
-
-      real(wp) :: extice_sw(nlayers,nbndsw)      ! SW ice extinction coefficients
-      real(wp) :: ssaice_sw(nlayers,nbndsw)      ! SW ice single scattering albedo
-      real(wp) :: asyice_sw(nlayers,nbndsw)      ! SW ice asymmetry parameter
-
-      real(wp) :: tauliq_sw                      ! SW liquid cloud extinction optical depth - no delta scaling
-      real(wp) :: tauice_sw                      ! SW ice cloud extinction optical depth - no delta scaling
-
-      real(wp) :: scatice                        ! Ice scattering term
-      real(wp) :: scatliq                        ! Liquid scattering term
-
-      real(wp) :: asycld                         ! LW asymmetry parameter - local
-
-      real(wp) :: forwliq, forwice               ! Forward scattering terms
-      real(wp) :: tauliq_del, tauice_del         ! Extinction optical depth - with delta scaling
-      real(wp) :: ssaliq_del, ssaice_del         ! Single scattering albedo - with delta scaling
-
-! ------- Definitions -------
-
-! ------- Error checking -------
-      error_msg = ''
-      icergh = cloud_spec%icergh
-      if (icergh < 1 .or. icergh > 3) then
-         error_msg = 'cloud optics: cloud ice surface roughness flag is out of bounds'
-         return
-      endif
-
-! Initialize
-      extliq_sw(:,:) = 0.0_wp
-      ssaliq_sw(:,:) = 1.0_wp
-      asyliq_sw(:,:) = 0.0_wp
-      extice_sw(:,:) = 0.0_wp
-      ssaice_sw(:,:) = 1.0_wp
-      asyice_sw(:,:) = 0.0_wp
-
-      select type(cloud_optical_props)
-        type is (ty_cloud_optical_props_1scl)
-          cloud_optical_props%taucld(:,:,:) = 0.0_wp
-        type is (ty_cloud_optical_props_2str)
-          cloud_optical_props%taucld(:,:,:) = 0.0_wp
-          cloud_optical_props%ssacld(:,:,:) = 1.0_wp
-          cloud_optical_props%asycld(:,:,:) = 0.0_wp
-        type is (ty_cloud_optical_props_nstr)
-          cloud_optical_props%taucld(:,:,:) = 0.0_wp
-          cloud_optical_props%ssacld(:,:,:) = 1.0_wp
-          cloud_optical_props%pcld(:,:,:,:) = 0.0_wp
-      end select
-
-! Main column loop
-   do icol = 1, ncol
-
-! Cloud optical properties from Pade coefficients
-
-      do ilyr = 1, nlayers
-         cwp = ciwp(icol,ilyr) + clwp(icol,ilyr)
-         if (cldfrac(icol,ilyr) .gt. cldmin .and. cwp .gt. cldmin) then 
-! Derive optical properties from Pade functions 
-! Original Pade formulations for EXT, SSA, G
-
-! Liquid OP
-            radliq = rel(icol,ilyr)
-            if (radliq .gt. 0.0_wp .and. clwp(icol,ilyr) .gt. 0.0_wp) then 
-! Define coefficient particle size regime for current size: extinction, ssa
-               irade = cloud_spec%get_irad(radliq, 'liq', 'sw', 'ext')
-               irads = cloud_spec%get_irad(radliq, 'liq', 'sw', 'ssa')
-               iradg = cloud_spec%get_irad(radliq, 'liq', 'sw', 'asy')
-               do ibnd = 1, nbndsw
-                  p_e(:) = cloud_spec%pade_extliq(ibnd,irade,:)
-                  extliq_sw(ilyr,ibnd) = cloud_spec%pade_ext(p_e, radliq)
-                  p(:) = cloud_spec%pade_ssaliq(ibnd,irads,:)
-                  ssaliq_sw(ilyr,ibnd) = cloud_spec%pade_ssa(p, radliq)
-                  p(:) = cloud_spec%pade_asyliq(ibnd,iradg,:)
-                  asyliq_sw(ilyr,ibnd) = cloud_spec%pade_asy(p, radliq)
-               enddo
-            endif
-
-! Ice OP for requested ice roughness (icergh)
-            radice = rei(icol,ilyr)
-            if (radice .gt. 0.0_wp .and. ciwp(icol,ilyr) .gt. 0.0_wp) then 
-! Define coefficient particle size regime for current size: extinction, ssa
-               irade = cloud_spec%get_irad(radice, 'ice', 'sw', 'ext')
-               irads = cloud_spec%get_irad(radice, 'ice', 'sw', 'ssa')
-               iradg = cloud_spec%get_irad(radice, 'ice', 'sw', 'asy')
-               do ibnd = 1, nbndsw
-! Derive optical properties for selected ice roughness
-                  select case (icergh)
-
-! No ice roughness 
-                  case(1)
-                     p_e(:) = cloud_spec%pade_extice(ibnd,irade,:,icergh)
-                     extice_sw(ilyr,ibnd) = cloud_spec%pade_ext(p_e, radice)
-                     p(:) = cloud_spec%pade_ssaice(ibnd,irads,:,icergh)
-                     ssaice_sw(ilyr,ibnd) = cloud_spec%pade_ssa(p, radice)
-                     p(:) = cloud_spec%pade_asyice(ibnd,iradg,:,icergh)
-                     asyice_sw(ilyr,ibnd) = cloud_spec%pade_asy(p, radice)
-
-! Medium ice roughness 
-                  case(2)
-                     p_e(:) = cloud_spec%pade_extice(ibnd,irade,:,icergh)
-                     extice_sw(ilyr,ibnd) = cloud_spec%pade_ext(p_e, radice)
-                     p(:) = cloud_spec%pade_ssaice(ibnd,irads,:,icergh)
-                     ssaice_sw(ilyr,ibnd) = cloud_spec%pade_ssa(p, radice)
-                     p(:) = cloud_spec%pade_asyice(ibnd,iradg,:,icergh)
-                     asyice_sw(ilyr,ibnd) = cloud_spec%pade_asy(p, radice)
-
-! High ice roughness 
-                  case(3)
-                     p_e(:) = cloud_spec%pade_extice(ibnd,irade,:,icergh)
-                     extice_sw(ilyr,ibnd) = cloud_spec%pade_ext(p_e, radice)
-                     p(:) = cloud_spec%pade_ssaice(ibnd,irads,:,icergh)
-                     ssaice_sw(ilyr,ibnd) = cloud_spec%pade_ssa(p, radice)
-                     p(:) = cloud_spec%pade_asyice(ibnd,iradg,:,icergh)
-                     asyice_sw(ilyr,ibnd) = cloud_spec%pade_asy(p, radice)
-
-                  end select
-               enddo
-
-            endif
-         endif
-! End layer loop
-      enddo
-
-! End column loop
-   enddo
-
-! Combine liquid and ice contributions into total cloud optical properties
-   do icol = 1, ncol
-      do ilyr = 1, nlayers
-         cwp = ciwp(icol,ilyr) + clwp(icol,ilyr)
-         if (cldfrac(icol,ilyr) .gt. cldmin .and. cwp .gt. cldmin) then 
-
-         do ibnd = 1, nbndsw
-            tauice_sw = ciwp(icol,ilyr) * extice_sw(ilyr,ibnd)
-            tauliq_sw = clwp(icol,ilyr) * extliq_sw(ilyr,ibnd)
-
-            if (tauice_sw == 0.0_wp .and. tauliq_sw == 0.0_wp) then
-               error_msg = 'cloud optics: shortwave cloud optical depth is zero'
-               return
-            endif
-
-! Define final output with or without delta-scaling
-            select case (cloud_spec%idelscl)
-
-! No delta-scaling
-            case(0)
-
-              select type(cloud_optical_props)
-                type is (ty_cloud_optical_props_1scl)
-                  cloud_optical_props%taucld(icol,ilyr,ibnd) = tauice_sw + tauliq_sw
-                type is (ty_cloud_optical_props_2str)
-                  cloud_optical_props%taucld(icol,ilyr,ibnd) = tauice_sw + tauliq_sw
-                  scatice = ssaice_sw(ilyr,ibnd) * tauice_sw
-                  scatliq = ssaliq_sw(ilyr,ibnd) * tauliq_sw
-                  cloud_optical_props%ssacld(icol,ilyr,ibnd) = (scatice + scatliq) / &
-                                        cloud_optical_props%taucld(icol,ilyr,ibnd)
-                  cloud_optical_props%asycld(icol,ilyr,ibnd) = &
-                       (scatice * asyice_sw(ilyr,ibnd) + scatliq * asyliq_sw(ilyr,ibnd)) / &
-                       (scatice + scatliq)
-                type is (ty_cloud_optical_props_nstr)
-                  cloud_optical_props%taucld(icol,ilyr,ibnd) = tauice_sw + tauliq_sw
-                  cloud_optical_props%ssacld(icol,ilyr,ibnd) = (scatice + scatliq) / &
-                                        cloud_optical_props%taucld(icol,ilyr,ibnd)
-                  asycld = &
-                       (scatice * asyice_sw(ilyr,ibnd) + scatliq * asyliq_sw(ilyr,ibnd)) / &
-                       (scatice + scatliq)
-                  cloud_optical_props%pcld(1,icol,ilyr,ibnd) = 1.0_wp
-                  cloud_optical_props%pcld(2,icol,ilyr,ibnd) = asycld
-                  cloud_optical_props%pcld(3,icol,ilyr,ibnd) = asycld**2
-              end select
-
-! RP comments: 
-!   Delta scaling should be omitted here. It's available from ty_optical_props_2scl etc 
-
-! With delta-scaling
-            case(1)
-
-              forwliq = asyliq_sw(ilyr,ibnd)**2
-              forwice = asyice_sw(ilyr,ibnd)**2
-              tauliq_del = (1.0_wp - forwliq * ssaliq_sw(ilyr,ibnd)) * tauliq_sw
-              tauice_del = (1.0_wp - forwice * ssaice_sw(ilyr,ibnd)) * tauice_sw
-
-              select type(cloud_optical_props)
-                type is (ty_cloud_optical_props_1scl)
-                  cloud_optical_props%taucld(icol,ilyr,ibnd) = tauliq_del + tauice_del
-                type is (ty_cloud_optical_props_2str)
-                  cloud_optical_props%taucld(icol,ilyr,ibnd) = tauliq_del + tauice_del
-                    ssaliq_del = ssaliq_sw(ilyr,ibnd) * (1._wp - forwliq) / &
-                                 (1._wp - forwliq * ssaliq_sw(ilyr,ibnd))
-                    ssaice_del = ssaice_sw(ilyr,ibnd) * (1._wp - forwice) / &
-                                 (1._wp - forwice * ssaice_sw(ilyr,ibnd))
-                    scatliq = ssaliq_del * tauliq_del
-                    scatice = ssaice_del * tauice_del
-                  cloud_optical_props%ssacld(icol,ilyr,ibnd) = (scatliq + scatice) / &
-                                 cloud_optical_props%taucld(icol,ilyr,ibnd)
-                  cloud_optical_props%asycld(icol,ilyr,ibnd) = &
-                       (scatice * (asyice_sw(ilyr,ibnd) - forwice) / (1._wp - forwice) + &
-                        scatliq * (asyliq_sw(ilyr,ibnd) - forwliq) / (1._wp - forwliq)) / &
-                       (scatice + scatliq)
-                type is (ty_cloud_optical_props_nstr)
-                  cloud_optical_props%taucld(icol,ilyr,ibnd) = tauliq_del + tauice_del
-                    ssaliq_del = ssaliq_sw(ilyr,ibnd) * (1._wp - forwliq) / &
-                                 (1._wp - forwliq * ssaliq_sw(ilyr,ibnd))
-                    ssaice_del = ssaice_sw(ilyr,ibnd) * (1._wp - forwice) / &
-                                 (1._wp - forwice * ssaice_sw(ilyr,ibnd))
-                    scatliq = ssaliq_del * tauliq_del
-                    scatice = ssaice_del * tauice_del
-                  cloud_optical_props%ssacld(icol,ilyr,ibnd) = (scatliq + scatice) / &
-                                 cloud_optical_props%taucld(icol,ilyr,ibnd)
-                    asycld = &
-                       (scatliq * (asyliq_sw(ilyr,ibnd) - forwliq) / (1._wp - forwliq) + &
-                        scatice * (asyice_sw(ilyr,ibnd) - forwice) / (1._wp - forwice)) / &
-                       (scatliq + scatice)
-                  cloud_optical_props%pcld(1,icol,ilyr,ibnd) = 1.0_wp
-                  cloud_optical_props%pcld(2,icol,ilyr,ibnd) = asycld
-                  cloud_optical_props%pcld(3,icol,ilyr,ibnd) = 0.0_wp
-              end select
-
-            end select
-
-         enddo
-
-         endif
-      enddo
-   enddo
-
-  end function cloud_optics_sw
-
-  !--------------------------------------------------------------------------------------------------------------------
-  !
-  ! Ancillary functions
-  !
-  !--------------------------------------------------------------------------------------------------------------------
-  !---------------------------------------------------------------------------
   function get_irad(cloud_spec,rad,phase,regime,param)
      class(ty_cloud_optics_pade), intent(inout) :: cloud_spec
      real(wp), intent(in) :: rad             ! particle radius
