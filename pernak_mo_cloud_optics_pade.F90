@@ -342,7 +342,7 @@ module mo_cloud_optics_pade
     endif
 
     ! RP comments: 
-    !   As per all other RRTMGP examples, the validity of input data 
+    ! As per all other RRTMGP examples, the validity of input data 
     ! should be checked the outside computational loop. That means 
     ! checking that sizes are in range, values are positive, etc. 
     !
@@ -353,7 +353,7 @@ module mo_cloud_optics_pade
     ! the size regime arrays. 
 
     ! RP comments
-    !   Some (many?) of these values will be replaced. Better to use 
+    ! Some (many?) of these values will be replaced. Better to use 
     ! merge() in loops below. 
 
     ! Initialize
@@ -607,9 +607,12 @@ module mo_cloud_optics_pade
                       (scatice * asyice(ilyr,ibnd) + &
                       (scatliq * asyliq(ilyr,ibnd))) / &
                       (scatice + scatliq)
-                    cloud_optical_props%pcld(1,icol,ilyr,ibnd) = 1.0_wp
-                    cloud_optical_props%pcld(2,icol,ilyr,ibnd) = asycld
-                    cloud_optical_props%pcld(3,icol,ilyr,ibnd) = asycld**2
+                    cloud_optical_props%pcld(1,icol,ilyr,ibnd) = &
+                      1.0_wp
+                    cloud_optical_props%pcld(2,icol,ilyr,ibnd) = &
+                      asycld
+                    cloud_optical_props%pcld(3,icol,ilyr,ibnd) = 
+                      asycld**2
                 end select
               endif ! SW delta scaling
             endif ! LW/SW
@@ -633,68 +636,86 @@ module mo_cloud_optics_pade
   function calc_optical_props()
   end function calc_optical_props
 
-  function get_irad(cloud_spec,rad,phase,regime,param)
+  function get_irad(cloud_spec,rad,phase,param)
      class(ty_cloud_optics_pade), intent(inout) :: cloud_spec
-     real(wp), intent(in) :: rad             ! particle radius
-     character(len=3), intent(in) :: phase   ! liq/ice
-     character(len=2), intent(in) :: regime  ! lw/sw
-     character(len=3), intent(in) :: param   ! ext/ssa/asy
-     integer :: get_irad                     ! irad index
-     ! Local variables
-     integer :: irad
-     real(wp), dimension(4) :: sizreg
 
-! Liq/LW
-     if (phase .eq. 'liq' .and. regime .eq. 'lw') then
-        if (param .eq. 'ext' .or. param .eq. 'ssa') sizreg = cloud_spec%pade_sizreg_liqlw(1,:)
-        if (param .eq. 'asy') sizreg = cloud_spec%pade_sizreg_liqlw(2,:)
-        do irad = 1, 2 
-           if (rad .gt. sizreg(irad) .and. rad .le. sizreg(irad+1)) get_irad = irad
-        enddo
-     endif
+    ! particle radius
+    real(wp), intent(in) :: rad
 
-! Ice/LW
-     if (phase .eq. 'ice' .and. regime .eq. 'lw') then
-        sizreg = cloud_spec%pade_sizreg_icelw(1,:)
-        if (cloud_spec%icergh .eq. 1 .and. param .eq. 'ssa' .or. param .eq. 'asy') &
-           sizreg = cloud_spec%pade_sizreg_icelw(2,:)
-           do irad = 1, 3 
-              if (rad .gt. sizreg(irad) .and. rad .le. sizreg(irad+1)) get_irad = irad
-           enddo
-        endif
+    ! phase (liq/ice), ext/ssa/asy
+    character(len=3), intent(in) :: phase, param
 
-! Liq/SW - ext, ssa
-     if (phase .eq. 'liq' .and. regime .eq. 'sw') then
-        if (param .eq. 'ext' .or. param .eq. 'ssa') sizreg = cloud_spec%pade_sizreg_liqsw(1,:)
-        if (param .eq. 'asy') sizreg = cloud_spec%pade_sizreg_liqsw(2,:)
-        do irad = 1, 2 
-           if (rad .gt. sizreg(irad) .and. rad .le. sizreg(irad+1)) get_irad = irad
-        enddo
-     endif
+    integer :: get_irad
 
-! Ice/SW
-     if (phase .eq. 'ice' .and. regime .eq. 'sw') then
-        sizreg = cloud_spec%pade_sizreg_icesw(1,:)
-        do irad = 1, 3 
-           if (rad .gt. sizreg(irad) .and. rad .le. sizreg(irad+1)) get_irad = irad
-        enddo
-     endif
+    ! Local variables
+    integer :: irad
+    real(wp), dimension(4) :: sizreg
 
+    ! Liq/LW
+    if (phase .eq. 'liq' .and. cloud_spec%is_lw) then
+      if (param .eq. 'ext' .or. param .eq. 'ssa') then
+        sizreg = cloud_spec%pade_sizreg_liqlw(1,:)
+      else (param .eq. 'asy') 
+        sizreg = cloud_spec%pade_sizreg_liqlw(2,:)
+      endif
+
+      do irad = 1, 2 
+        if (rad .gt. sizreg(irad) .and. rad .le. sizreg(irad+1)) &
+          get_irad = irad
+      enddo
+    endif ! liquid LW
+
+    ! Ice/LW
+    if (phase .eq. 'ice' .and. cloud_spec%is_lw) then
+      sizreg = cloud_spec%pade_sizreg_icelw(1,:)
+      if (cloud_spec%icergh .eq. 1 .and. param .eq. 'ssa' .or. &
+          param .eq. 'asy') &
+        sizreg = cloud_spec%pade_sizreg_icelw(2,:)
+
+      do irad = 1, 3 
+        if (rad .gt. sizreg(irad) .and. & rad .le. sizreg(irad+1)) &
+          get_irad = irad
+      enddo
+    endif ! ice LW
+
+    ! Liq/SW - ext, ssa
+    if (phase .eq. 'liq' .and. .not. cloud_spec%is_lw) then
+      if (param .eq. 'ext' .or. param .eq. 'ssa') &
+        sizreg = cloud_spec%pade_sizreg_liqsw(1,:)
+      if (param .eq. 'asy') &
+        sizreg = cloud_spec%pade_sizreg_liqsw(2,:)
+      do irad = 1, 2 
+        if (rad .gt. sizreg(irad) .and. rad .le. sizreg(irad+1)) &
+          get_irad = irad
+      enddo
+    endif ! liquid SW
+
+    ! Ice/SW
+    if (phase .eq. 'ice' .and. .not. cloud_spec%is_lw) then
+      sizreg = cloud_spec%pade_sizreg_icesw(1,:)
+      do irad = 1, 3 
+      if (rad .gt. sizreg(irad) .and. rad .le. sizreg(irad+1)) &
+        get_irad = irad
+      enddo
+    endif ! ice SW
   end function get_irad
 
-! RP comments: 
-!  Much better to replace repeated code with a single routine to evaluate Pade approximants
-!  since the formula is entirely general https://en.wikipedia.org/wiki/Padé_approximant
+  ! RP comments: 
+  ! Much better to replace repeated code with a single routine to 
+  ! evaluate Pade approximants since the formula is entirely general 
+  ! https://en.wikipedia.org/wiki/Padé_approximant
+  !
+  !   function pade(n_num, num, n_den, denom)
+  !     integer, intent(in) :: n_num, n_den
+  !     real(wp), intent(in) :: num(n_num), den(n_den) 
+  !
+  !  Direct exponentiation is very expensive. Please evaluate 
+  !  polynomals with Horner 
+  !  (p(1) + p(2)*reff + p(3)*reff**2  = p(1) + reff*(p(2) + reff * p3))
+  !  or better as a loop over the number of terms 
 
-!   function pade(n_num, num, n_den, denom)
-!     integer, intent(in) :: n_num, n_den
-!     real(wp), intent(in) :: num(n_num), den(n_den) 
-!
-!  Direct exponentiation is very expensive. Please evaluate polynomals with Horner 
-!  (p(1) + p(2)*reff + p(3)*reff**2  = p(1) + reff*(p(2) + reff * p3))
-!  or better as a loop over the number of terms 
-
-! If ssa is fit as coalbedo (1 - ssa) that can be done where this routine is called. 
+  ! If ssa is fit as coalbedo (1 - ssa) that can be done where this 
+  ! routine is called. 
 
 !---------------------------------------------------------------------------
   function pade_ext(cloud_spec,p,reff)
