@@ -169,14 +169,13 @@ module mo_cloud_optics_pade
   function init_cldopt(cloud_spec, cld_coeff_file, is_lw) &
     result(error_msg)
 
-    ! Pade
+    ! Pade cloud optics
     class(ty_optics_1scl), intent(inout) :: cloud_spec
 
     ! Cloud coefficient optical property input file - Pade
     character(len=*), intent(in) :: cld_coeff_file
 
     logical, intent(in) :: is_lw
-
     character(len = 128) error_msg
 
     ! Local variables
@@ -637,7 +636,7 @@ module mo_cloud_optics_pade
   end function calc_optical_props
 
   function get_irad(cloud_spec,rad,phase,param)
-     class(ty_cloud_optics_pade), intent(inout) :: cloud_spec
+    class(ty_cloud_optics_pade), intent(inout) :: cloud_spec
 
     ! particle radius
     real(wp), intent(in) :: rad
@@ -711,7 +710,7 @@ module mo_cloud_optics_pade
   !
   !  Direct exponentiation is very expensive. Please evaluate 
   !  polynomals with Horner 
-  !  (p(1) + p(2)*reff + p(3)*reff**2  = p(1) + reff*(p(2) + reff * p3))
+  !(p(1) + p(2)*reff + p(3)*reff**2  = p(1) + reff*(p(2) + reff * p3))
   !  or better as a loop over the number of terms 
 
   ! If ssa is fit as coalbedo (1 - ssa) that can be done where this 
@@ -750,11 +749,14 @@ module mo_cloud_optics_pade
                 (1.0_wp+p(4)*reff+p(5)*reff**2))
   end function pade_asy
 
-  !--------------------------------------------------------------------------------------------------------------------
-  !
-  ! Does this file contain variables needed to do LW calculations ? 
-  !
   function is_lw(fileName) 
+    !----------------------------------------------------------------
+    !
+    ! Does this file contain variables needed to do LW calculations? 
+    ! I don't think this is necessary anymore now that is_lw is a 
+    ! an attribute in this Pade cloud optics class
+    !----------------------------------------------------------------
+
     character(len=*), intent(in   ) :: fileName
     logical                         :: is_lw
     
@@ -763,20 +765,13 @@ module mo_cloud_optics_pade
     is_lw = .false.
     if(nf90_open(trim(fileName), NF90_NOWRITE, ncid) /= NF90_NOERR) & 
       call stop_on_err("is_lw: can't find file " // trim(fileName))
-      
-    if(nf90_inq_dimid(ncid, 'nband_lw', dimid) == NF90_NOERR) is_lw = .true.
-          
+
+    if(nf90_inq_dimid(ncid, 'nband_lw', dimid) == NF90_NOERR) &
+      is_lw = .true.
+
     ncid = nf90_close(ncid) 
   end function is_lw
-!  ! ----------------------
-!  function is_sw(fileName) 
-!    character(len=*), intent(in   ) :: fileName
-!    logical                         :: is_sw
-!    
-!    is_sw = .not. is_lw(fileName) 
-!  end function is_sw                     
 
-  !--------------------------------------------------------------------------------------------------------------------
   subroutine stop_on_err(msg)
     use iso_fortran_env, only : error_unit
     character(len=*), intent(in) :: msg
@@ -787,161 +782,192 @@ module mo_cloud_optics_pade
     end if
   end subroutine
 
-  !--------------------------------------------------------------------------------------------------------------------
   function get_dim_length(ncid, dimname)
     !
     ! Get the length of a dimension from an open netCDF file
     !  This is unfortunately a two-step process
     !
+
     integer,          intent(in) :: ncid
     character(len=*), intent(in) :: dimname
-    integer :: get_dim_length
+    integer :: get_dim_length, dimid
 
-    integer :: dimid
-
+    ! so....get_dim_length can only be undefined or 0?
     if(nf90_inq_dimid(ncid, trim(dimname), dimid) == NF90_NOERR) then
-      if(nf90_inquire_dimension(ncid, dimid, len=get_dim_length) /= NF90_NOERR) get_dim_length = 0
+      if(nf90_inquire_dimension(ncid, dimid, len=get_dim_length) /= &
+         NF90_NOERR) get_dim_length = 0
     else
       get_dim_length = 0
     end if
-
   end function get_dim_length
-  !--------------------------------------------------------------------------------------------------------------------
+
   function get_data_size(ncid, varName, n)
     !
     ! Returns the extents of a netcdf variable on disk
     !
-    integer,          intent(in) :: ncid
-    character(len=*), intent(in) :: varName
-    integer,          intent(in) :: n
-    integer                      :: get_data_size(n)
 
-    integer :: i
-    integer :: varid, ndims, dimids(n)
+    integer,          intent(in) :: ncid, n
+    character(len=*), intent(in) :: varName
+    integer                      :: get_data_size(n), i, &
+                                    varid, ndims, dimids(n)
 
     get_data_size(n) = -1
-    if(nf90_inq_varid(ncid, trim(varName), varid) /= NF90_NOERR) &
-      call stop_on_err("get_data_size: can't find variable " // trim(varName))
-    if(nf90_inquire_variable(ncid, varid, ndims = ndims) /= NF90_NOERR) &
-      call stop_on_err("get_data_size: can't get information for variable " // trim(varName))
-    if(ndims /= n) &
-      call stop_on_err("get_data_size:  variable " // trim(varName) // " has the wrong number of dimensions" )
-    if(nf90_inquire_variable(ncid, varid, dimids = dimids) /= NF90_NOERR) &
-      call stop_on_err("get_data_size: can't read dimension ids for variable " // trim(varName))
-    do i = 1, n
-      if(nf90_inquire_dimension(ncid, dimids(i), len = get_data_size(i)) /= NF90_NOERR) &
-        call stop_on_err("get_data_size: can't get dimension lengths for variable " // trim(varName))
-    end do
 
+    if(nf90_inq_varid(ncid, trim(varName), varid) /= NF90_NOERR) &
+      call stop_on_err("get_data_size: can't find variable " // &
+      trim(varName))
+
+    if(nf90_inquire_variable(ncid, varid, ndims = ndims) /= &
+       NF90_NOERR) &
+      call stop_on_err(&
+      "get_data_size: can't get information for variable " // &
+      trim(varName))
+
+    if(ndims /= n) &
+      call stop_on_err("get_data_size:  variable " // &
+      trim(varName) // &
+      " has the wrong number of dimensions" )
+    
+    if(nf90_inquire_variable(ncid, varid, dimids = dimids) /= &
+       NF90_NOERR) &
+      call stop_on_err(&
+      "get_data_size: can't read dimension ids for variable " // &
+      trim(varName))
+
+    do i = 1, n
+      if(nf90_inquire_dimension(&
+         ncid, dimids(i), len = get_data_size(i)) /= NF90_NOERR) &
+        call stop_on_err(&
+        "get_data_size: can't get dim lengths for variable " // &
+        trim(varName))
+    end do
   end function get_data_size
-  !--------------------------------------------------------------------------------------------------------------------
 
   function read_scalar(ncid, varName)
     integer,          intent(in) :: ncid
     character(len=*), intent(in) :: varName
     real(wp)                     :: read_scalar
-
     integer :: varid
 
     if(nf90_inq_varid(ncid, trim(varName), varid) /= NF90_NOERR) &
-      call stop_on_err("read_field: can't find variable " // trim(varName))
-    if(nf90_get_var(ncid, varid, read_scalar)  /= NF90_NOERR) &
-      call stop_on_err("read_field: can't read variable " // trim(varName))
+      call stop_on_err("read_field: can't find variable " // &
+      trim(varName))
 
+    if(nf90_get_var(ncid, varid, read_scalar)  /= NF90_NOERR) &
+      call stop_on_err("read_field: can't read variable " // &
+      trim(varName))
   end function read_scalar
-  !--------------------------------------------------------------------------------------------------------------------
+
   function read_1d_field(ncid, varName, nx)
     integer,          intent(in) :: ncid
     character(len=*), intent(in) :: varName
     integer,          intent(in) :: nx
     real(wp), dimension(nx)      :: read_1d_field
-
     integer :: varid
 
     if(any(get_data_size(ncid, varName, 1) /= [nx])) &
-      call stop_on_err("read_field: variable " // trim(varName) // " size is inconsistent.")
-    if(nf90_inq_varid(ncid, trim(varName), varid) /= NF90_NOERR) &
-      call stop_on_err("read_field: can't find variable " // trim(varName))
-    if(nf90_get_var(ncid, varid, read_1d_field)  /= NF90_NOERR) &
-      call stop_on_err("read_field: can't read variable " // trim(varName))
+      call stop_on_err("read_field: variable " // trim(varName) // &
+      " size is inconsistent.")
 
+    if(nf90_inq_varid(ncid, trim(varName), varid) /= NF90_NOERR) &
+      call stop_on_err("read_field: can't find variable " // &
+      trim(varName))
+
+    if(nf90_get_var(ncid, varid, read_1d_field)  /= NF90_NOERR) &
+      call stop_on_err("read_field: can't read variable " // &
+      trim(varName))
   end function read_1d_field
-  !--------------------------------------------------------------------------------------------------------------------
+
   function read_2d_field(ncid, varName, nx, ny)
     integer,          intent(in) :: ncid
     character(len=*), intent(in) :: varName
     integer,          intent(in) :: nx, ny
     real(wp), dimension(nx, ny)  :: read_2d_field
-
     integer :: varid
-    if(any(get_data_size(ncid, varName, 2) /= [nx, ny])) &
-      call stop_on_err("read_field: variable " // trim(varName) // " size is inconsistent.")
-    if(nf90_inq_varid(ncid, trim(varName), varid) /= NF90_NOERR) &
-      call stop_on_err("read_field: can't find variable " // trim(varName))
-    if(nf90_get_var(ncid, varid, read_2d_field)  /= NF90_NOERR) &
-      call stop_on_err("read_field: can't read variable " // trim(varName))
 
+    if(any(get_data_size(ncid, varName, 2) /= [nx, ny])) &
+      call stop_on_err("read_field: variable " // trim(varName) // &
+      " size is inconsistent.")
+
+    if(nf90_inq_varid(ncid, trim(varName), varid) /= NF90_NOERR) &
+      call stop_on_err("read_field: can't find variable " // &
+      trim(varName))
+
+    if(nf90_get_var(ncid, varid, read_2d_field)  /= NF90_NOERR) &
+      call stop_on_err("read_field: can't read variable " // &
+      trim(varName))
   end function read_2d_field
-  !--------------------------------------------------------------------------------------------------------------------
+
   function read_3d_field(ncid, varName, nx, ny, nz)
     integer,          intent(in) :: ncid
     character(len=*), intent(in) :: varName
     integer,          intent(in) :: nx, ny, nz
     real(wp), dimension(nx, ny, nz)  :: read_3d_field
-
     integer :: varid
 
     if(any(get_data_size(ncid, varName, 3) /= [nx, ny, nz])) &
-      call stop_on_err("read_field: variable " // trim(varName) // " size is inconsistent.")
-    if(nf90_inq_varid(ncid, trim(varName), varid) /= NF90_NOERR) &
-      call stop_on_err("read_field: can't find variable " // trim(varName))
-    if(nf90_get_var(ncid, varid, read_3d_field)  /= NF90_NOERR) &
-      call stop_on_err("read_field: can't read variable " // trim(varName))
+      call stop_on_err("read_field: variable " // trim(varName) // &
+      " size is inconsistent.")
 
+    if(nf90_inq_varid(ncid, trim(varName), varid) /= NF90_NOERR) &
+      call stop_on_err("read_field: can't find variable " // &
+      trim(varName))
+
+    if(nf90_get_var(ncid, varid, read_3d_field)  /= NF90_NOERR) &
+      call stop_on_err("read_field: can't read variable " // &
+      trim(varName))
   end function read_3d_field
-  !--------------------------------------------------------------------------------------------------------------------
+
   function read_4d_field(ncid, varName, nw, nx, ny, nz)
     integer,          intent(in) :: ncid
     character(len=*), intent(in) :: varName
     integer,          intent(in) :: nw, nx, ny, nz
     real(wp), dimension(nw, nx, ny, nz)  :: read_4d_field
-
     integer :: varid
 
     if(any(get_data_size(ncid, varName, 4) /= [nw, nx, ny, nz])) &
-      call stop_on_err("read_field: variable " // trim(varName) // " size is inconsistent." )
-    if(nf90_inq_varid(ncid, trim(varName), varid) /= NF90_NOERR) &
-      call stop_on_err("read_field: can't find variable " // trim(varName))
-    if(nf90_get_var(ncid, varid, read_4d_field)  /= NF90_NOERR) &
-      call stop_on_err("read_field: can't read variable " // trim(varName))
+      call stop_on_err("read_field: variable " // trim(varName) // &
+      " size is inconsistent." )
 
+    if(nf90_inq_varid(ncid, trim(varName), varid) /= NF90_NOERR) &
+      call stop_on_err("read_field: can't find variable " // &
+      trim(varName))
+
+    if(nf90_get_var(ncid, varid, read_4d_field)  /= NF90_NOERR) &
+      call stop_on_err("read_field: can't read variable " // &
+      trim(varName))
   end function read_4d_field
 
-  !--------------------------------------------------------------------------------------------------------------------
   function var_exists(ncid, varName) 
     !
-    ! Does this variable exist (have a valid var_id) in the open netCDF file? 
+    ! Does this variable exist (have a valid var_id) in the open 
+    ! netCDF file? 
     ! 
+
     integer,          intent(in) :: ncid 
     character(len=*), intent(in) :: varName
-    logical :: var_exists
-    
-    integer :: varId 
-    var_exists = nf90_inq_varid(ncid, trim(varName), varid) == NF90_NOERR
+    logical                      :: var_exists
+    integer                      :: varId 
+
+    var_exists = &
+      nf90_inq_varid(ncid, trim(varName), varid) == NF90_NOERR
   end function var_exists 
-  !--------------------------------------------------------------------------------------------------------------------
+
   function dim_exists(ncid, dimName) 
     !
-    ! Does this dimension exist (have a valid dim_id) in the open netCDF file? 
+    ! Does this dimension exist (have a valid dim_id) in the open 
+    ! netCDF file? 
     ! 
+
     integer,          intent(in) :: ncid 
     character(len=*), intent(in) :: dimName
-    logical :: dim_exists
-    
-    integer :: dimid
-    dim_exists = nf90_inq_dimid(ncid, trim(dimName), dimid) == NF90_NOERR
+    logical                      :: dim_exists
+    integer                      :: dimid
+
+    dim_exists = &
+      nf90_inq_dimid(ncid, trim(dimName), dimid) == NF90_NOERR
   end function dim_exists 
-  !--------------------------------------------------------------------------------------------------------------------
+
   subroutine create_dim(ncid, dimName, dimLength) 
     !
     ! Check to see if a dimiable with this name exists in the file
@@ -951,22 +977,27 @@ module mo_cloud_optics_pade
     integer,          intent(in) :: ncid 
     character(len=*), intent(in) :: dimName
     integer,          intent(in) :: dimLength
-    
-    integer                 :: i, dimid 
-    
+    integer                      :: i, dimid 
+
     if(dim_exists(ncid, dimName)) then 
       if (dimLength /= get_dim_length(ncid, trim(dimName))) & 
-          call stop_on_err("dim " // trim(dimName) // " is present but incorrectly sized.") 
+          call stop_on_err("dim " // trim(dimName) // &
+          " is present but incorrectly sized.") 
     else 
       if(nf90_redef(ncid) /= NF90_NOERR) & 
-        call stop_on_err("create_dim: can't put file into redefine mode") 
-      if(nf90_def_dim(ncid, dimName, dimLength, dimid) /= NF90_NOERR) & 
-        call stop_on_err("create_dim: can't define dimension " // trim(dimName))
+        call stop_on_err(&
+        "create_dim: can't put file into redefine mode") 
+
+      if(&
+        nf90_def_dim(ncid, dimName, dimLength, dimid) /= NF90_NOERR) & 
+        call stop_on_err("create_dim: can't define dimension " // &
+        trim(dimName))
+
       if(nf90_enddef(ncid) /= NF90_NOERR) & 
         call stop_on_err("create_dim: can't end redefinition??")
     end if 
   end subroutine create_dim 
-  !--------------------------------------------------------------------------------------------------------------------
+
   subroutine create_var(ncid, varName, dimNames, dimLengths, dataType)
     !
     ! Check to see if a variable with this name exists in the file
@@ -974,40 +1005,50 @@ module mo_cloud_optics_pade
     !   If not, create with specified dimensions  
     ! datatype: NF90_DOUBLE, NF90_FLOAT, NF90_INT, etc.
     ! 
+
     integer,          intent(in) :: ncid 
     character(len=*), intent(in) :: varName
     character(len=*), intent(in) :: dimNames(:) 
     integer,          intent(in) :: dimLengths(:)
     integer, optional, intent(in) :: dataType
     
-    integer :: i, varid, xtype
-    integer :: dimIds(size(dimNames))
+    integer :: i, varid, xtype, dimIds(size(dimNames))
     
     if(var_exists(ncid, varName)) then 
       do i = 1, size(dimNames) 
-        if (dimLengths(i) /= get_dim_length(ncid, trim(dimNames(i)))) & 
-          call stop_on_err("Variable " // trim(varName) // " is present but incorrectly sized.") 
+        if (dimLengths(i) /= &
+            get_dim_length(ncid, trim(dimNames(i)))) & 
+          call stop_on_err("Variable " // trim(varName) // &
+          " is present but incorrectly sized.") 
       end do 
     else 
       do i = 1, size(dimNames) 
-        if(nf90_inq_dimid(ncid, trim(dimNames(i)), dimIds(i)) /= NF90_NOERR) & 
-          call stop_on_err("create_var: Can't get id for dimension " // trim(dimnames(i)))
-      end do 
+        if(nf90_inq_dimid(&
+           ncid, trim(dimNames(i)), dimIds(i)) /= NF90_NOERR) & 
+          call stop_on_err("create_var: Can't get id for dim " // &
+          trim(dimnames(i)))
+      end do
+
       if(nf90_redef(ncid) /= NF90_NOERR) & 
-        call stop_on_err("create_var: can't put file into redefine mode") 
+        call stop_on_err(&
+          "create_var: can't put file into redefine mode") 
+
       xtype = NF90_DOUBLE
+
       if(present(dataType)) xtype = dataType
-      if(nf90_def_var(ncid, varName, xtype, dimIds, varid) /= NF90_NOERR) & 
-        call stop_on_err("create_var: can't define variable " // trim(varName))
+
+      if(nf90_def_var(ncid, varName, xtype, dimIds, varid) /= &
+        NF90_NOERR) call stop_on_err(&
+        "create_var: can't define variable " // trim(varName))
+
       if(nf90_enddef(ncid) /= NF90_NOERR) & 
         call stop_on_err("create_dim: can't end redefinition??")
     end if 
   end subroutine create_var 
-  !--------------------------------------------------------------------------------------------------------------------
 
-  !--------------------------------------------------------------------------------------------------------------------
+  !------------------------------------------------------------------
   ! Writing functions 
-  !--------------------------------------------------------------------------------------------------------------------
+  !------------------------------------------------------------------
   function write_1d_int_field(ncid, varName, var) result(err_msg) 
     integer,                intent(in) :: ncid 
     character(len=*),       intent(in) :: varName
@@ -1023,9 +1064,8 @@ module mo_cloud_optics_pade
     end if 
     if(nf90_put_var(ncid, varid, var)  /= NF90_NOERR) &
       err_msg = "write_field: can't write variable " // trim(varName)
-    
   end function write_1d_int_field
-  !--------------------------------------------------------------------------------------------------------------------
+
   function write_2d_int_field(ncid, varName, var) result(err_msg) 
     integer,                  intent(in) :: ncid 
     character(len=*),         intent(in) :: varName
@@ -1041,9 +1081,8 @@ module mo_cloud_optics_pade
     end if 
     if(nf90_put_var(ncid, varid, var)  /= NF90_NOERR) &
       err_msg = "write_field: can't write variable " // trim(varName)
-    
   end function write_2d_int_field
-  !--------------------------------------------------------------------------------------------------------------------
+
   function write_1d_field(ncid, varName, var) result(err_msg) 
     integer,                intent(in) :: ncid 
     character(len=*),       intent(in) :: varName
@@ -1059,9 +1098,8 @@ module mo_cloud_optics_pade
     end if 
     if(nf90_put_var(ncid, varid, var)  /= NF90_NOERR) &
       err_msg = "write_field: can't write variable " // trim(varName)
-    
   end function write_1d_field
-  !--------------------------------------------------------------------------------------------------------------------
+
   function write_2d_field(ncid, varName, var) result(err_msg) 
     integer,                  intent(in) :: ncid 
     character(len=*),         intent(in) :: varName
@@ -1077,9 +1115,8 @@ module mo_cloud_optics_pade
     end if 
     if(nf90_put_var(ncid, varid, var)  /= NF90_NOERR) &
       err_msg = "write_field: can't write variable " // trim(varName)
-    
   end function write_2d_field
-  !--------------------------------------------------------------------------------------------------------------------
+
   function write_3d_field(ncid, varName, var) result(err_msg) 
     integer,                    intent(in) :: ncid 
     character(len=*),           intent(in) :: varName
@@ -1095,9 +1132,8 @@ module mo_cloud_optics_pade
     end if 
     if(nf90_put_var(ncid, varid, var)  /= NF90_NOERR) &
       err_msg = "write_field: can't write variable " // trim(varName)  
-     
   end function write_3d_field
-  !--------------------------------------------------------------------------------------------------------------------
+
   function write_4d_field(ncid, varName, var) result(err_msg) 
     integer,                    intent(in) :: ncid 
     character(len=*),           intent(in) :: varName
@@ -1113,8 +1149,6 @@ module mo_cloud_optics_pade
     end if 
     if(nf90_put_var(ncid, varid, var)  /= NF90_NOERR) &
       err_msg = "write_field: can't write variable " // trim(varName)  
-     
   end function write_4d_field
-  !--------------------------------------------------------------------------------------------------------------------
 
 end module mo_cloud_optics_pade
