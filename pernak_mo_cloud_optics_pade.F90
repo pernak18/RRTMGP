@@ -59,13 +59,6 @@ module mo_cloud_optics_pade
 !  _2str, and _nstr from mo_optical_props. I don't see a way to avoid
 !  extending each with the same data components.
 !
-!  We will need a load function to add the cloud optics data 
-!  (coefficients or lookup tables); only one function is needed and 
-!  all the types can point to it. 
-!
-!  We will need a compute function that fills in the optical 
-!  properties arrays (tau/omega0/g or whatever)
-!
 !  validation() will need to be extended to ensure that the cloud 
 !  optics data are present,  that cloud physical and optical 
 !  properties arrays are allocated, the same size as the tau/omega0/g
@@ -102,12 +95,6 @@ module mo_cloud_optics_pade
     !  Cloud optics types shouldn't have hardcoded LW/SW distinctions. 
     !  Better to have explicit wavelength or wavenumber limits on 
     !  bands provided at initialization. 
-    !
-    !  compute() should include a variable of ty_spectral_disc as an 
-    !  input argument. If the cloud optics variable doesn't know how 
-    !  to provide data on that spectral grid an error string should 
-    !  be returned. It would also be possible to have a single type 
-    !  that can provide both LW and SW values. 
     !-----------------------------------------------------------------
 
     ! Model input: LUT
@@ -124,10 +111,10 @@ module mo_cloud_optics_pade
     ! Particle size regimes for Pade formulations
     !integer, dimension(2,4) :: pade_sizreg_liq, pade_sizreg_ice
     !integer, dimension(:,:) :: pade_sizreg_liq, pade_sizreg_ice
-    integer, dimension(:,:), allocatable :: pade_sizreg_liq_g, &
-                                            pade_sizreg_liq_tau
-    integer, dimension(:,:), allocatable :: pade_sizreg_ice_g
-                                            pade_sizreg_ice_tau
+    integer, dimension(:), allocatable :: pade_sizreg_liq_g, &
+                                          pade_sizreg_liq_tau
+    integer, dimension(:), allocatable :: pade_sizreg_ice_g
+                                          pade_sizreg_ice_tau
 
     ! Pade cloud coefficients
     real(wp), dimension(:,:,:  ), allocatable :: pade_extliq
@@ -152,7 +139,7 @@ module mo_cloud_optics_pade
 
   end type ty_optics_1scl
 
-  ! mo_cloud_optics_pade attributes and methods
+  ! mo_cloud_optics_pade methods
   contains
 
   !-------------------------------------------------------------------
@@ -162,7 +149,7 @@ module mo_cloud_optics_pade
   !-------------------------------------------------------------------
 
   ! Initialize object based on data read from netCDF file however the 
-  ! user desires. Pade coefficient data used for longwave cloud 
+  ! user desires. Pade coefficient data used for cloud 
   ! property conversion
   !-------------------------------------------------------------------
 
@@ -181,10 +168,10 @@ module mo_cloud_optics_pade
     ! Local variables
     integer :: ncid, nband, nrghice, nsizereg, &
       ncoeff_ext, ncoeff_ssa_g
-    integer, dimension(:,:), allocatable :: pade_sizreg_liq_g, &
-                                            pade_sizreg_liq_tau
-    integer, dimension(:,:), allocatable :: pade_sizreg_ice_g
-                                            pade_sizreg_ice_tau
+    integer, dimension(:), allocatable :: pade_sizreg_liq_g, &
+                                          pade_sizreg_liq_tau
+    integer, dimension(:), allocatable :: pade_sizreg_ice_g
+                                          pade_sizreg_ice_tau
 
     ! Particle size regimes for Pade formulations
     cloud_spec%pade_sizreg_liq_g(:) = (/2,10,35,60/)
@@ -194,7 +181,7 @@ module mo_cloud_optics_pade
       cloud_spec%pade_sizreg_liq_tau(:) = (/2,8,20,60/)
       cloud_spec%pade_sizreg_ice_tau(:) = (/10,20,50,180/)
     else
-      cloud_spec%pade_sizreg_liq_tau(:) = (/2,0,20,60/)
+      cloud_spec%pade_sizreg_liq_tau(:) = (/2,9,20,60/)
       cloud_spec%pade_sizreg_ice_tau(:) = (/10,20,30,180/)
     endif
 
@@ -628,10 +615,21 @@ module mo_cloud_optics_pade
   !-------------------------------------------------------------------
 
   ! the load function Robert requested
+  !  We will need a load function to add the cloud optics data 
+  !  (coefficients or lookup tables); only one function is needed and 
+  !  all the types can point to it. 
   function load_cloud_optics()
   end function load_cloud_optics
 
-  ! the compute function Robert requested
+  ! the compute function Robert requested:
+  !  We will need a compute function that fills in the optical 
+  !  properties arrays (tau/omega0/g or whatever)
+  !
+  !  compute() should include a variable of ty_spectral_disc as an 
+  !  input argument. If the cloud optics variable doesn't know how 
+  !  to provide data on that spectral grid an error string should 
+  !  be returned. It would also be possible to have a single type 
+  !  that can provide both LW and SW values. 
   function calc_optical_props()
   end function calc_optical_props
 
@@ -650,53 +648,30 @@ module mo_cloud_optics_pade
     integer :: irad
     real(wp), dimension(4) :: sizreg
 
-    ! Liq/LW
-    if (phase .eq. 'liq' .and. cloud_spec%is_lw) then
+    if (phase .eq. 'liq') then
       if (param .eq. 'ext' .or. param .eq. 'ssa') then
-        sizreg = cloud_spec%pade_sizreg_liqlw(1,:)
+        sizreg = cloud_spec%pade_sizreg_liq_g(:)
       else (param .eq. 'asy') 
-        sizreg = cloud_spec%pade_sizreg_liqlw(2,:)
+        sizreg = cloud_spec%pade_sizreg_liq_tau(:)
       endif
 
-      do irad = 1, 2 
+      do irad = 1, 2
         if (rad .gt. sizreg(irad) .and. rad .le. sizreg(irad+1)) &
           get_irad = irad
       enddo
-    endif ! liquid LW
+    endif ! liquid
 
-    ! Ice/LW
-    if (phase .eq. 'ice' .and. cloud_spec%is_lw) then
-      sizreg = cloud_spec%pade_sizreg_icelw(1,:)
-      if (cloud_spec%icergh .eq. 1 .and. param .eq. 'ssa' .or. &
-          param .eq. 'asy') &
-        sizreg = cloud_spec%pade_sizreg_icelw(2,:)
+    if (phase .eq. 'ice') then
+      sizreg = cloud_spec%pade_sizreg_ice_g(:)
+      if (cloud_spec%icergh .eq. 1 .and. cloud_spec%is_lw .and. &
+         (param .eq. 'ssa' .or. param .eq. 'asy')) &
+        sizreg = cloud_spec%pade_sizreg_ice_tau(:)
 
       do irad = 1, 3 
-        if (rad .gt. sizreg(irad) .and. & rad .le. sizreg(irad+1)) &
-          get_irad = irad
-      enddo
-    endif ! ice LW
-
-    ! Liq/SW - ext, ssa
-    if (phase .eq. 'liq' .and. .not. cloud_spec%is_lw) then
-      if (param .eq. 'ext' .or. param .eq. 'ssa') &
-        sizreg = cloud_spec%pade_sizreg_liqsw(1,:)
-      if (param .eq. 'asy') &
-        sizreg = cloud_spec%pade_sizreg_liqsw(2,:)
-      do irad = 1, 2 
         if (rad .gt. sizreg(irad) .and. rad .le. sizreg(irad+1)) &
           get_irad = irad
       enddo
-    endif ! liquid SW
-
-    ! Ice/SW
-    if (phase .eq. 'ice' .and. .not. cloud_spec%is_lw) then
-      sizreg = cloud_spec%pade_sizreg_icesw(1,:)
-      do irad = 1, 3 
-      if (rad .gt. sizreg(irad) .and. rad .le. sizreg(irad+1)) &
-        get_irad = irad
-      enddo
-    endif ! ice SW
+    endif ! ice
   end function get_irad
 
   ! RP comments: 
