@@ -22,3 +22,5 @@ Some relevant clarifications from Robert:
 - as the objects "grow", new data (e.g., tau) needs to be added to the existing data
 - but optical property and array objects are abstract in that they cannot be instantiated; rather, the array objects are extended by "concrete" 1-scalar, 2-stream, and n-stream subclasses that can be instantiated once an analytical solution (e.g., n-stream) is derived from the input arguments. these subclasses are what will be returned
 
+I've copied over all of the relevant RRTMGP code from the SVN repository for reference when designing the cloud optics class. We will first do this in Python, then port to Fortran 2003.
+
