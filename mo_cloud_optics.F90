@@ -74,14 +74,17 @@ module mo_cloud_optics
   type, extends(ty_spectral_disc), public :: ty_cloud_optics_band_nstr
     ! Attributes in extended (sub)class
     real(wp), dimension(:,:,:), allocatable :: optical_depth, ssalbedo
-    real(wp), dimension(:,:,:,:), allocatable :: p
+    real(wp), dimension(:,:,:,:), allocatable :: phase
   end type ty_cloud_optics_band
 
   function init(cld_spec, gas_spec, cld_fraction, &
     play, plev, tlay, tsfc, &
     cld_liq_water_path, cld_ice_water_path, ice_rough, &
     r_eff_liq, r_eff_ice, &
-    pade_liq_tau, pade_liq_g, pade_ice_tau, pade_ice_g)
+    pade_liq_tau, pade_liq_g, pade_ice_tau, pade_ice_g, &
+    pade_extliq, pade_ssaliq, pade_asyliq, &
+    pade_extice, pade_ssaice, pade_asyliq, &
+    method)
 
     ! initialization of the cloud_optics class
     ! ---------------------------------------------------------------
@@ -104,6 +107,9 @@ module mo_cloud_optics
     !   pade_???_tau, pade_???_g -- Pade coefficients size limits for 
     !     ice and liquid for tau and g regimes (integer vectors; need 
     !     to be the same number of elements?)
+    !   method -- boolean, method (1-scalar, 2-stream, n-stream) used 
+    !     for solving radiative transfer equation with scattering 
+    !     ("1scl", "2str", or "nstr" only)
     ! ---------------------------------------------------------------
 
     ! ---------------------------------------------------------------
@@ -112,10 +118,6 @@ module mo_cloud_optics
     implicit none
 
     ! User input
-    ! can i just use a conditional in the declarations for cld_spec?
-    ! assuming, of course, that we have some sort of keyword to 
-    ! specify whether we want a 1-scalar, 2-stream, or n-stream class
-    class(ty_cloud_optics_band), intent(out) :: cld_spec
     class(ty_gas_optics_specification), intent(in) :: gas_spec
 
     real(wp), dimension(:,:), intent(in) :: play, plev, tlay
@@ -125,6 +127,20 @@ module mo_cloud_optics
     real(wp), intent(in), dimension(:,:), allocatable :: &
       cld_fraction, cld_liq_water_path, cld_ice_water_path, &
       r_eff_liq, r_eff_ice
+
+    ! can i use a conditional in the declaration for cld_spec?
+    character(len=4), intent(in):: method
+    character(len=128): err_msg
+    if (method .eq. "1scl") then
+      class(ty_cloud_optics_band_1scl), intent(out) :: cld_spec
+    elseif (method .eq. "2str") then
+      class(ty_cloud_optics_band_2str), intent(out) :: cld_spec
+    elseif (method .eq. "nstr") then
+      class(ty_cloud_optics_band_nstr), intent(out) :: cld_spec
+    else
+      err_msg = "Please specify '1scl', '2str', or 'nstr' for method"
+      call stop_on_err(err_msg)
+    endif
     ! ---------------------------------------------------------------
 
     ! ---------------------------------------------------------------
@@ -139,20 +155,44 @@ module mo_cloud_optics
     cld_spec%ncoeff_ext = ! from netCDF
     cld_spec%ncoeff_ssa_asy = ! from netCDF
 
-    ! arrays
-    allocate(cloud_spec%cld_fraction(cld_spec%ncol, cld_spec%nlay))
-    allocate(cloud_spec%cld_liq_water_path(&
+    ! optical physical arrays
+    allocate(cld_spec%cld_fraction(cld_spec%ncol, cld_spec%nlay))
+    allocate(cld_spec%cld_liq_water_path(&
       cld_spec%ncol, cld_spec%nlay))
     allocate(cloud_spec%cld_ice_water_path(&
       cld_spec%ncol, cld_spec%nlay))
-    allocate(cloud_spec%r_eff_liq(cld_spec%ncol, cld_spec%nlay))
-    allocate(cloud_spec%r_eff_ice(cld_spec%ncol, cld_spec%nlay))
+    allocate(cld_spec%r_eff_liq(cld_spec%ncol, cld_spec%nlay))
+    allocate(cld_spec%r_eff_ice(cld_spec%ncol, cld_spec%nlay))
 
     cld_spec%cld_fraction = cld_fraction
     cld_spec%cld_liq_water_path = cld_liq_water_path
     cld_spec%cld_ice_water_path = cld_ice_water_path
     cld_spec%r_eff_liq = r_reff_liq
     cld_spec%r_eff_ice = r_eff_ice
+
+    ! Pade coefficient input arrays
+    allocate(cld_spec%pade_extliq(&
+      cld_spec%nband, cld_spec%nsizereg, cld_spec%ncoeff_ext))
+    allocate(cld_spec%pade_ssaliq(&
+      cld_spec%nband, cld_spec%nsizereg, cld_spec%ncoeff_ssa_asy))
+    allocate(cld_spec%pade_asyliq(&
+      cld_spec%nband, cld_spec%nsizereg, cld_spec%ncoeff_ssa_asy))
+    allocate(cld_spec%pade_extice(&
+      cld_spec%nband, cld_spec%nsizereg, &
+      cld_spec%ncoeff_ext, cld_spec%nrghice))
+    allocate(cld_spec%pade_ssaice(&
+      cld_spec%nband, cld_spec%nsizereg, &
+      cld_spec%ncoeff_ssa_g, cld_spec%nrghice))
+    allocate(cld_spec%pade_asyice(&
+      cld_spec%nband, cld_spec%nsizereg, &
+      cld_spec%ncoeff_ssa_g, cld_spec%nrghice))
+
+    cld_spec%pade_extliq  = pade_extliq
+    cld_spec%pade_ssaliq  = pade_ssaliq
+    cld_spec%pade_asyliq  = pade_asyliq
+    cld_spec%pade_extice  = pade_extice
+    cld_spec%pade_ssaice  = pade_ssaice
+    cld_spec%pade_asyice  = pade_asyice
     ! ---------------------------------------------------------------
 
   end function init
