@@ -45,19 +45,39 @@ module mo_cloud_optics
 
   ! ---------------------------------------------------------------
   ! Attributes for entire class
-  integer :: icergh
+
+  ! dimensions
   integer :: ncol, nlay, nlev, nband, nrough, nsizereg, &
-    ncoeff_ext, ncoeff_ssa_asy
+    nsizeice, nsizeliq, ncoeff_ext, ncoeff_ssa, ncoeff_asy
+
+  ! optical properties
+  integer :: icergh
   real(wp), dimension(:,:), allocatable :: &
     cld_fraction, cld_liq_water_path, cld_ice_water_path, &
     r_eff_liq, r_eff_ice
+  character(len=2) :: spectral_domain
+  character(len=4) :: approx
+  character(len=*) :: cld_coeff_file
+  logical :: do_lw, do_pade
+
+  ! Pade coefficients/LUT data
+  ! not sure how to handle the two different allocations...LUT 
+  ! tables have 1 less dimension for both phases
+  real(wp), dimension(:,:,:), allocatable :: extliq, ssaliq, asyliq
+  real(wp), dimension(:,:,:,:), allocatable :: extice, ssaic, asyice
+
+  ! Pade size (effective radius) regime boundaries
+  integer, dimension(4) :: &
+    r_eff_bounds_liq_ext, r_eff_bounds_ice_ext, &
+    r_eff_bounds_liq_ssa, r_eff_bounds_ice_ssa, &
+    r_eff_bounds_liq_asy, r_eff_bounds_ice_asy
   ! ---------------------------------------------------------------
 
   ! ---------------------------------------------------------------
   ! Methods for entire class
   public :: load_cloud_optics, calc_optical_properties, &
-            stop_on_err, get_dim_length, read_field, create_var, &
-            dim_exists, var_exists, write_field
+    stop_on_err, get_dim_length, create_var, dim_exists, var_exists, &
+    read_field, write_field
   ! ---------------------------------------------------------------
 
   type, extends(ty_spectral_disc), public :: ty_cloud_optics_band_1scl
@@ -77,18 +97,16 @@ module mo_cloud_optics
     real(wp), dimension(:,:,:,:), allocatable :: phase
   end type ty_cloud_optics_band
 
-  function init(cld_spec, gas_spec, cld_fraction, &
+  contains
+
+  function init(this, gas_spec, cld_fraction, &
     play, plev, tlay, tsfc, &
     cld_liq_water_path, cld_ice_water_path, ice_rough, &
-    r_eff_liq, r_eff_ice, &
-    pade_liq_tau, pade_liq_g, pade_ice_tau, pade_ice_g, &
-    pade_extliq, pade_ssaliq, pade_asyliq, &
-    pade_extice, pade_ssaice, pade_asyliq, &
-    method)
+    r_eff_liq, r_eff_ice, method, is_lw, is_pade)
 
     ! initialization of the cloud_optics class
     ! ---------------------------------------------------------------
-    !   cld_spec -- object of class ty_cloud_optics_*_band
+    !   this -- object of class ty_cloud_optics_*_band
     !   gas_spec -- object of class ty_gas_optics_specification, 
     !     which contains state information at each layer and level
     !   cld_fraction -- (nCol x nLay) float array of percentage 
@@ -104,12 +122,14 @@ module mo_cloud_optics
     !     (1 = none, 2 = medium, 3 = high)
     !   r_eff_??? -- (nCol x nLay) float arrays of ice and liquid 
     !     effective radii (or size) [microns]
-    !   pade_???_tau, pade_???_g -- Pade coefficients size limits for 
-    !     ice and liquid for tau and g regimes (integer vectors; need 
-    !     to be the same number of elements?)
-    !   method -- boolean, method (1-scalar, 2-stream, n-stream) used 
+    !   method -- string, method (1-scalar, 2-stream, n-stream) used 
     !     for solving radiative transfer equation with scattering 
     !     ("1scl", "2str", or "nstr" only)
+    !   is_lw -- boolean, are the specifications for the LW domain?
+    !     (otherwise SW)
+    !   is_pade -- boolean, is the Pade approximation being used in
+    !     the optical property calculations? (otherwise LookUp Table
+    !     -- LUT -- data are used)
     ! ---------------------------------------------------------------
 
     ! ---------------------------------------------------------------
@@ -117,6 +137,7 @@ module mo_cloud_optics
     ! force declaration of all variables ("good practice")
     implicit none
 
+    ! ---------------------------------------------------------------
     ! User input
     class(ty_gas_optics_specification), intent(in) :: gas_spec
 
@@ -127,16 +148,19 @@ module mo_cloud_optics
     real(wp), intent(in), dimension(:,:), allocatable :: &
       cld_fraction, cld_liq_water_path, cld_ice_water_path, &
       r_eff_liq, r_eff_ice
+    ! ---------------------------------------------------------------
 
-    ! can i use a conditional in the declaration for cld_spec?
+    ! ---------------------------------------------------------------
+    ! Output is an object of either the 1scl, 2str, or nstr class
+    ! can i use a conditional in the declaration for this?
     character(len=4), intent(in):: method
     character(len=128): err_msg
     if (method .eq. "1scl") then
-      class(ty_cloud_optics_band_1scl), intent(out) :: cld_spec
+      class(ty_cloud_optics_band_1scl), intent(out) :: this
     elseif (method .eq. "2str") then
-      class(ty_cloud_optics_band_2str), intent(out) :: cld_spec
+      class(ty_cloud_optics_band_2str), intent(out) :: this
     elseif (method .eq. "nstr") then
-      class(ty_cloud_optics_band_nstr), intent(out) :: cld_spec
+      class(ty_cloud_optics_band_nstr), intent(out) :: this
     else
       err_msg = "Please specify '1scl', '2str', or 'nstr' for method"
       call stop_on_err(err_msg)
@@ -144,72 +168,189 @@ module mo_cloud_optics
     ! ---------------------------------------------------------------
 
     ! ---------------------------------------------------------------
-    ! Attribute assignments
-    ! dimensions
-    cld_spec%ncol = size(play, 1)
-    cld_spec%nlay = size(play, 2)
-    cld_spec%nlev = cld_spec%nlay + 1
-    cld_spec%nband = ! from netCDF
-    cld_spec%nrough = ! from netCDF
-    cld_spec%nsizereg = ! from netCDF
-    cld_spec%ncoeff_ext = ! from netCDF
-    cld_spec%ncoeff_ssa_asy = ! from netCDF
+    ! Intermediates (neither input nor output)
+    character(len=*) :: cld_coeff_file, domain_str, approx_str, &
+      extliq_str, ssaliq_str, asyliq_str, &
+      extice_str, ssaice_str, asyice_str
 
-    ! optical physical arrays
-    allocate(cld_spec%cld_fraction(cld_spec%ncol, cld_spec%nlay))
-    allocate(cld_spec%cld_liq_water_path(&
-      cld_spec%ncol, cld_spec%nlay))
-    allocate(cloud_spec%cld_ice_water_path(&
-      cld_spec%ncol, cld_spec%nlay))
-    allocate(cld_spec%r_eff_liq(cld_spec%ncol, cld_spec%nlay))
-    allocate(cld_spec%r_eff_ice(cld_spec%ncol, cld_spec%nlay))
-
-    cld_spec%cld_fraction = cld_fraction
-    cld_spec%cld_liq_water_path = cld_liq_water_path
-    cld_spec%cld_ice_water_path = cld_ice_water_path
-    cld_spec%r_eff_liq = r_reff_liq
-    cld_spec%r_eff_ice = r_eff_ice
-
-    ! Pade coefficient input arrays
-    allocate(cld_spec%pade_extliq(&
-      cld_spec%nband, cld_spec%nsizereg, cld_spec%ncoeff_ext))
-    allocate(cld_spec%pade_ssaliq(&
-      cld_spec%nband, cld_spec%nsizereg, cld_spec%ncoeff_ssa_asy))
-    allocate(cld_spec%pade_asyliq(&
-      cld_spec%nband, cld_spec%nsizereg, cld_spec%ncoeff_ssa_asy))
-    allocate(cld_spec%pade_extice(&
-      cld_spec%nband, cld_spec%nsizereg, &
-      cld_spec%ncoeff_ext, cld_spec%nrghice))
-    allocate(cld_spec%pade_ssaice(&
-      cld_spec%nband, cld_spec%nsizereg, &
-      cld_spec%ncoeff_ssa_g, cld_spec%nrghice))
-    allocate(cld_spec%pade_asyice(&
-      cld_spec%nband, cld_spec%nsizereg, &
-      cld_spec%ncoeff_ssa_g, cld_spec%nrghice))
-
-    cld_spec%pade_extliq  = pade_extliq
-    cld_spec%pade_ssaliq  = pade_ssaliq
-    cld_spec%pade_asyliq  = pade_asyliq
-    cld_spec%pade_extice  = pade_extice
-    cld_spec%pade_ssaice  = pade_ssaice
-    cld_spec%pade_asyice  = pade_asyice
+    integer, dimension(4) :: &
+      r_eff_bounds_liq_ext, r_eff_bounds_ice_ext, &
+      r_eff_bounds_liq_ssa, r_eff_bounds_ice_ssa, &
+      r_eff_bounds_liq_asy, r_eff_bounds_ice_asy 
     ! ---------------------------------------------------------------
 
+    ! ---------------------------------------------------------------
+    ! Attribute assignments
+    ! dimensions
+    this%ncol = size(play, 1)
+    this%nlay = size(play, 2)
+    this%nlev = size(plev, 2)
+
+    ! "metadata" properties
+    this%do_lw = is_lw
+    this%do_pade = is_pade
+
+    if (is_lw) then
+      this%spectral_domain = 'lw'
+    else
+      this%spectral_domain = 'sw'
+    endif
+
+    if (is_pade) then
+      this%approx = 'pade'
+    else
+      this%approx = 'lut'
+    endif
+
+    this%cld_coeff_file = 'rrtmgp-' // &
+      this%spectral_domain // '-inputs-cloud-optics-' // &
+      this%approx //'.nc'
+
+    ! physical property arrays
+    allocate(this%cld_fraction(this%ncol, this%nlay))
+    allocate(this%cld_liq_water_path(&
+      this%ncol, this%nlay))
+    allocate(cloud_spec%cld_ice_water_path(&
+      this%ncol, this%nlay))
+    allocate(this%r_eff_liq(this%ncol, this%nlay))
+    allocate(this%r_eff_ice(this%ncol, this%nlay))
+
+    this%cld_fraction = cld_fraction
+    this%cld_liq_water_path = cld_liq_water_path
+    this%cld_ice_water_path = cld_ice_water_path
+    this%r_eff_liq = r_reff_liq
+    this%r_eff_ice = r_eff_ice
+
+    ! load LUT or Pade Coefficients
+    load_cloud_optics(this)
+
+    ! compute optical properties
+    calc_optical_properties(this)
+    ! ---------------------------------------------------------------
   end function init
 
-  function load_cloud_optics(cld_spec)
+  function load_cloud_optics(this)
     ! from an input netCDF, load cloud optics data into 
     ! class attributes
+
+    ! local variables will just be used as shortcuts
+    integer, private :: ncol, nlay, nlev, nband, nrough, nsizereg, &
+      ncoeff_ext, ncoeff_ssa_asy
+    character(len=2), private :: lw_sw
+    character(len=4), private :: pade_lut
+    character(len=*), private :: extLiqStr, ssaLiqStr, asyLiqStr
+    character(len=*), private :: extIceStr, ssaIceStr, asyIceStr
+
+    lw_sw = this%spectral_domain
+    pade_lut = this%approx
+
+    ! Pade/LUT data extraction
+    if (nf90_open(&
+       trim(this%cld_coeff_file), NF90_WRITE, ncid) &
+       /= NF90_NOERR) & 
+       call stop_on_err("load_cloud_optics(): can't open file " // &
+       trim(cld_coeff_file))
+
+    ! LUT and Pade common dimensions, with shortcuts
+    this%nband = get_dim_length(ncid, 'nband_' // lw_sw)
+    this%nrough = get_dim_length(ncid, 'nrghice')
+    nBand = this%nband
+    nRough = this%ncoeff_nrough
+
+    extLiqStr = pade_lut // '_extliq_' // lw_sw
+    ssaLiqStr = pade_lut // '_ssaliq_' // lw_sw
+    asyLiqStr = pade_lut // '_asyliq_' // lw_sw
+    extIceStr = pade_lut // '_extice_' // lw_sw
+    ssaIceStr = pade_lut // '_ssaice_' // lw_sw
+    asyIceStr = pade_lut // '_asyice_' // lw_sw
+
+    if (this%do_pade) then
+      ! Pade-exclusive dimensions and shortcuts
+      this%nsizereg = get_dim_length(ncid, 'nsizereg')
+      this%ncoeff_ext = get_dim_length(ncid, 'ncoeff_ext')
+      this%ncoeff_ssa = get_dim_length(ncid, 'ncoeff_ssa_g')
+      this%ncoeff_asy = get_dim_length(ncid, 'ncoeff_ssa_g')
+      nSizeReg = this%nsizereg
+      nCoeffExt = this%ncoeff_ext
+      nCoeffSSA = this%ncoeff_ssa
+      nCoeffAsy = this%ncoeff_asy
+
+      ! Pade coefficient input arrays
+      allocate(this%extliq(nCoeffExt, nSizeReg, nBand))
+      allocate(this%ssaliq(nCoeffSSA, nSizeReg, nBand))
+      allocate(this%asyliq(nCoeffAsy, nSizeReg, nBand))
+      allocate(this%extice(nRough, nCoeffExt, nSizeReg, nBand))
+      allocate(this%ssaice(nRough, nCoeffSSA, nSizeReg, nBand))
+      allocate(this%asyice(nRough, nCoeffAsy, nSizeReg, nBand))
+
+      ! liquid
+      this%extliq  = read_field(&
+        ncid, extLiqStr, nCoeffExt, nSizeReg, nBand)
+      this%ssaliq  = read_field(&
+        ncid, ssaLiqStr, nCoeffSSA, nSizeReg, nBand)
+      this%asyliq  = read_field(&
+        ncid, asyLiqStr, nCoeffAsy, nSizeReg, nBand)
+
+      ! ice
+      this%extice  = read_field(&
+        ncid, extIceStr, nRough, nCoeffExt, nSizeReg, nBand)
+      this%ssaice  = read_field(&
+        ncid, ssaIceStr, nRough, nCoeffSSA, nSizeReg, nBand)
+      this%asyice  = read_field(&
+        ncid, asyIceStr, nRough, nCoeffAsy, nSizeReg, nBand)
+
+      ! Particle size regimes for Pade formulations
+      ! these bounds were determined by fitting the Pade polynomials 
+      ! to the lookup table data (the fits had to be done in groups of 
+      ! of effective radius)
+      ! SW and LW are mostly the same (defaults are LW)
+      this%r_eff_bounds_liq_ext = (/2,10,35,60/)
+      this%r_eff_bounds_liq_ssa = (/2,10,35,60/)
+      this%r_eff_bounds_liq_asy = (/2,9,20,60/)
+      this%r_eff_bounds_ice_ext = (/10,20,30,180/)
+      this%r_eff_bounds_ice_ssa = (/10,20,30,180/)
+      this%r_eff_bounds_ice_asy = (/10,20,30,180/)
+
+      if (this%do_lw) then
+        r_eff_bounds_liq_asy(2) = 8
+        r_eff_bounds_ice_asy(2) = 50
+      endif ! LW
+    else ! LUT
+      ! LUT-exclusive dimensions and shortcuts
+      this%nsizeice = get_dim_length(ncid, 'nsize_ice')
+      this%nsizeliq = get_dim_length(ncid, 'nsize_liq')
+      nSizeIce = this%nsizeice
+      nSizeLiq = this%nsizeliq
+
+      ! LUT data input arrays
+      allocate(this%extliq(nSizeLiq, nBand))
+      allocate(this%ssaliq(nSizeLiq, nBand))
+      allocate(this%asyliq(nSizeLiq, nBand))
+      allocate(this%extice(nRough, nBand, nSizeIce))
+      allocate(this%ssaice(nRough, nBand, nSizeIce))
+      allocate(this%asyice(nRough, nBand, nSizeIce))
+
+      ! liquid
+      this%extliq  = read_field(ncid, extLiqStr, nSizeLiq, nBand)
+      this%ssaliq  = read_field(ncid, ssaLiqStr, nSizeLiq, nBand)
+      this%asyliq  = read_field(ncid, asyLiqStr, nSizeLiq, nBand)
+
+      ! ice
+      this%extice  = read_field(&
+        ncid, extIceStr, nRough, nBand, nSizeIce)
+      this%ssaice  = read_field(&
+        ncid, ssaIceStr, nRough, nBand, nSizeIce)
+      this%asyice  = read_field(&
+        ncid, asyIceStr, nRough, nBand, nSizeIce)
+    endif ! Pade/LUT
+
+    ncid = nf90_close(ncid) 
   end function load_cloud_optics
 
-  ! ---------------------------------------------------------------
-  ! Not sure if this guy is necessary anymore...but it was first
-  ! requested by Robert along with the load function
-
-  function calc_optical_properties(cld_spec)
+  function calc_optical_properties(this)
     ! from cloud optics object, calculate optical properties 
-    ! given the specifications in its attributes
+    ! (tau,OD/extinction/ext, omega/single scatter albedo/ssa, 
+    ! g/asymmetry/asy) given the specifications in its attributes
   end function calc_optical_properties
-  ! ---------------------------------------------------------------
 end module mo_cloud_optics
 
