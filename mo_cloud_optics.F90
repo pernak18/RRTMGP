@@ -54,21 +54,30 @@ module mo_cloud_optics
   integer :: roughness
   real(wp), dimension(:,:), allocatable :: &
     cld_fraction, cld_liq_water_path, cld_ice_water_path, &
-    r_eff_liq, r_eff_ice
+    cld_tot_water_path, r_eff_liq, r_eff_ice
 
   ! metadata
   character(len=2) :: spectral_domain
-  character(len=4) :: approx
+  character(len=4) :: approx, method
   character(len=*) :: cld_coeff_file
   logical :: do_lw, do_pade
 
+  !https://software.intel.com/en-us/forums/intel-visual-fortran-compiler-for-windows/topic/295774
+  ! declaring this way means i don't have to call allocate() as long
+  ! as i set an option at compile time?
   ! Pade coefficients/LUT data
-  ! not sure how to handle the two different allocations...LUT 
-  ! tables have 1 less dimension for both phases
   real(wp), dimension(:,:,:), allocatable :: &
-    co_extliq, co_ssaliq, co_asyliq
+    pade_extliq, pade_ssaliq, pade_asyliq
   real(wp), dimension(:,:,:,:), allocatable :: &
-    co_extice, co_ssaic, co_asyice
+    pade_extice, pade_ssaice, pade_asyice
+  real(wp), dimension(:,:), allocatable :: &
+    lut_extliq, lut_ssaliq, lut_asyliq
+  real(wp), dimension(:,:,:), allocatable :: &
+    lut_extice, lut_ssaice, lut_asyice
+
+  ! masks for cloud presence
+  logical, dimension(:,:), allocatable :: &
+    ice_cloud_present, liq_cloud_present
 
   ! cloud optical properties
   real(wp), dimension(:,:,:), allocatable :: extliq, ssaliq, asyliq
@@ -83,26 +92,29 @@ module mo_cloud_optics
 
   ! ---------------------------------------------------------------
   ! Methods for entire class
-  public :: load_cloud_optics, calc_optical_properties, &
+  public :: error_check, make_cloud_mask, &
+    load_cloud_optics, calc_optical_properties, &
     stop_on_err, get_dim_length, create_var, dim_exists, var_exists, &
     read_field, write_field
   ! ---------------------------------------------------------------
 
-  type, extends(ty_spectral_disc), public :: ty_cloud_optics_band_1scl
+  type, extends(ty_optical_props_1scl), public :: &
+    ty_cloud_optics_band_1scl
     ! Attributes in extended (sub)class
-    real(wp), dimension(:,:,:), allocatable :: optical_depth
+    real(wp), dimension(:,:,:), allocatable :: tau
   end type ty_cloud_optics_band
 
-  type, extends(ty_spectral_disc), public :: ty_cloud_optics_band_2str
+  type, extends(ty_optical_props_2str), public :: &
+    ty_cloud_optics_band_2str
     ! Attributes in extended (sub)class
-    real(wp), dimension(:,:,:), allocatable :: &
-      optical_depth, ssalbedo, asymmetry
+    real(wp), dimension(:,:,:), allocatable :: tau, ssa, asy
   end type ty_cloud_optics_band
 
-  type, extends(ty_spectral_disc), public :: ty_cloud_optics_band_nstr
+  type, extends(ty_optical_props_nstr), public :: &
+    ty_cloud_optics_band_nstr
     ! Attributes in extended (sub)class
-    real(wp), dimension(:,:,:), allocatable :: optical_depth, ssalbedo
-    real(wp), dimension(:,:,:,:), allocatable :: phase
+    real(wp), dimension(:,:,:), allocatable :: tau, ssa, asy
+    real(wp), dimension(:,:,:,:), allocatable :: phi
   end type ty_cloud_optics_band
 
   contains
@@ -177,14 +189,8 @@ module mo_cloud_optics
 
     ! ---------------------------------------------------------------
     ! Intermediates (neither input nor output)
-    character(len=*) :: cld_coeff_file, domain_str, approx_str, &
-      extliq_str, ssaliq_str, asyliq_str, &
+    character(len=*) :: extliq_str, ssaliq_str, asyliq_str, &
       extice_str, ssaice_str, asyice_str
-
-    integer, dimension(4) :: &
-      r_eff_bounds_liq_ext, r_eff_bounds_ice_ext, &
-      r_eff_bounds_liq_ssa, r_eff_bounds_ice_ssa, &
-      r_eff_bounds_liq_asy, r_eff_bounds_ice_asy 
     ! ---------------------------------------------------------------
 
     ! ---------------------------------------------------------------
@@ -195,6 +201,7 @@ module mo_cloud_optics
     this%nlev = size(plev, 2)
 
     ! "metadata" properties
+    this%method = method
     this%do_lw = is_lw
     this%do_pade = is_pade
 
@@ -212,33 +219,41 @@ module mo_cloud_optics
 
     this%cld_coeff_file = 'rrtmgp-' // &
       this%spectral_domain // '-inputs-cloud-optics-' // &
-      this%approx //'.nc'
+      trim(this%approx) //'.nc'
 
     ! physical property arrays
-    allocate(this%cld_fraction(this%ncol, this%nlay))
-    allocate(this%cld_liq_water_path(this%ncol, this%nlay))
-    allocate(this%cld_ice_water_path(this%ncol, this%nlay))
-    allocate(this%r_eff_liq(this%ncol, this%nlay))
-    allocate(this%r_eff_ice(this%ncol, this%nlay))
-    this%roughness = ice_rough
-
+    ! need to do some data validation on these guys!!
     this%cld_fraction = cld_fraction
     this%cld_liq_water_path = cld_liq_water_path
     this%cld_ice_water_path = cld_ice_water_path
     this%r_eff_liq = r_reff_liq
     this%r_eff_ice = r_eff_ice
+    this%roughness = ice_rough
+    do icol = 1, this%ncol
+      do ilyr = 1, this%nlayers
+        this%cld_tot_water_path(icol, ilyr) = &
+          cld_liq_water_path(icol, ilyr) + &
+          cld_ice_water_path(icol, ilyr)
+      enddo ! icol
+    enddo ! ilyr
 
     ! load LUT or Pade Coefficients
-    load_cloud_optics(this)
+    this%load_cloud_optics()
+
+    this%error_check()
+
+    ! are clouds present?
+    this%make_cloud_mask()
 
     ! compute optical properties
-    calc_optical_properties(this)
+    this%calc_optical_properties()
     ! ---------------------------------------------------------------
   end function init
 
-  function load_cloud_optics(this)
+  function load_cloud_optics()
     ! from an input netCDF, load cloud optics data into 
-    ! class attributes
+    ! class attributes (should work regardless of the spectral domain 
+    ! and Pade-LUT formalism)
 
     ! local variables will just be used as shortcuts
     integer, private :: ncol, nlay, nlev, nband, nrough, nsizereg, &
@@ -254,7 +269,7 @@ module mo_cloud_optics
     ! Pade/LUT data extraction
     if (nf90_open(&
        trim(this%cld_coeff_file), NF90_WRITE, ncid) &
-       /= NF90_NOERR) & 
+       /= NF90_NOERR) &
        call stop_on_err("load_cloud_optics(): can't open file " // &
        trim(cld_coeff_file))
 
@@ -283,27 +298,23 @@ module mo_cloud_optics
       nCoeffAsy = this%ncoeff_asy
 
       ! Pade coefficient input arrays
-      allocate(this%co_extliq(nCoeffExt, nSizeReg, nBand))
-      allocate(this%co_ssaliq(nCoeffSSA, nSizeReg, nBand))
-      allocate(this%co_asyliq(nCoeffAsy, nSizeReg, nBand))
-      allocate(this%co_extice(nRough, nCoeffExt, nSizeReg, nBand))
-      allocate(this%co_ssaice(nRough, nCoeffSSA, nSizeReg, nBand))
-      allocate(this%co_asyice(nRough, nCoeffAsy, nSizeReg, nBand))
+      ! i don't think i need to do the allocation anymore since 
+      ! i'm declaring these guys with "allocatable"
 
       ! liquid
-      this%co_extliq  = read_field(&
+      this%pade_extliq  = read_field(&
         ncid, extLiqStr, nCoeffExt, nSizeReg, nBand)
-      this%co_ssaliq  = read_field(&
+      this%pade_ssaliq  = read_field(&
         ncid, ssaLiqStr, nCoeffSSA, nSizeReg, nBand)
-      this%co_asyliq  = read_field(&
+      this%pade_asyliq  = read_field(&
         ncid, asyLiqStr, nCoeffAsy, nSizeReg, nBand)
 
       ! ice
-      this%co_extice  = read_field(&
+      this%pade_extice  = read_field(&
         ncid, extIceStr, nRough, nCoeffExt, nSizeReg, nBand)
-      this%co_ssaice  = read_field(&
+      this%pade_ssaice  = read_field(&
         ncid, ssaIceStr, nRough, nCoeffSSA, nSizeReg, nBand)
-      this%co_asyice  = read_field(&
+      this%pade_asyice  = read_field(&
         ncid, asyIceStr, nRough, nCoeffAsy, nSizeReg, nBand)
 
       ! Particle size regimes for Pade formulations
@@ -311,16 +322,16 @@ module mo_cloud_optics
       ! to the lookup table data (the fits had to be done in groups of 
       ! of effective radius)
       ! SW and LW are mostly the same (defaults are LW)
-      this%r_eff_bounds_liq_ext = (/2,10,35,60/)
-      this%r_eff_bounds_liq_ssa = (/2,10,35,60/)
-      this%r_eff_bounds_liq_asy = (/2,9,20,60/)
-      this%r_eff_bounds_ice_ext = (/10,20,30,180/)
-      this%r_eff_bounds_ice_ssa = (/10,20,30,180/)
-      this%r_eff_bounds_ice_asy = (/10,20,30,180/)
+      this%r_eff_bounds_liq_ext = [2, 10, 35, 60]
+      this%r_eff_bounds_liq_ssa = [2, 10, 35, 60]
+      this%r_eff_bounds_liq_asy = [2, 9, 20, 60]
+      this%r_eff_bounds_ice_ext = [10, 20, 30, 180]
+      this%r_eff_bounds_ice_ssa = [10, 20, 30, 180]
+      this%r_eff_bounds_ice_asy = [10, 20, 30, 180]
 
       if (this%do_lw) then
-        r_eff_bounds_liq_asy(2) = 8
-        r_eff_bounds_ice_asy(2) = 50
+        this%r_eff_bounds_liq_asy(2) = 8
+        this%r_eff_bounds_ice_asy(2) = 50
       endif ! LW
     else ! LUT
       ! LUT-exclusive dimensions and shortcuts
@@ -329,76 +340,121 @@ module mo_cloud_optics
       nSizeIce = this%nsizeice
       nSizeLiq = this%nsizeliq
 
-      ! LUT data input arrays
-      allocate(this%co_extliq(nSizeLiq, nBand))
-      allocate(this%co_ssaliq(nSizeLiq, nBand))
-      allocate(this%co_asyliq(nSizeLiq, nBand))
-      allocate(this%co_extice(nRough, nBand, nSizeIce))
-      allocate(this%co_ssaice(nRough, nBand, nSizeIce))
-      allocate(this%co_asyice(nRough, nBand, nSizeIce))
+      ! LUT data arrays
+      ! i don't think i need to do the allocation anymore since 
+      ! i'm declaring these guys with "allocatable"
 
       ! liquid
-      this%co_extliq  = read_field(ncid, extLiqStr, nSizeLiq, nBand)
-      this%co_ssaliq  = read_field(ncid, ssaLiqStr, nSizeLiq, nBand)
-      this%co_asyliq  = read_field(ncid, asyLiqStr, nSizeLiq, nBand)
+      this%lut_extliq  = read_field(ncid, extLiqStr, nSizeLiq, nBand)
+      this%lut_ssaliq  = read_field(ncid, ssaLiqStr, nSizeLiq, nBand)
+      this%lut_asyliq  = read_field(ncid, asyLiqStr, nSizeLiq, nBand)
 
       ! ice
-      this%co_extice  = read_field(&
+      this%lut_extice  = read_field(&
         ncid, extIceStr, nRough, nBand, nSizeIce)
-      this%co_ssaice  = read_field(&
+      this%lut_ssaice  = read_field(&
         ncid, ssaIceStr, nRough, nBand, nSizeIce)
-      this%co_asyice  = read_field(&
+      this%lut_asyice  = read_field(&
         ncid, asyIceStr, nRough, nBand, nSizeIce)
     endif ! Pade/LUT
 
     ncid = nf90_close(ncid)
   end function load_cloud_optics
 
-  function calc_optical_properties(this)
-    ! from cloud optics object, calculate optical properties:
-    !       tau/OD/extinction/ext, 
-    !       omega/single scatter albedo/ssa, 
-    !       g/asymmetry/asy
-    ! given the specifications in its attributes
-
-    ! ------- Input -------
-
-    ! cloud specification data
-    class(ty_optics_1scl), intent(inout) :: this
-
-    ! ------- Output -------
-    ! Dimensions: (ncol x nlayers x nbndlw)
-    class(ty_cloud_optical_props_arry), intent(inout) :: &
-      cloud_optical_props
-
-    ! ------- Local -------
+  function error_check()
+    ! check the data for any invalid values
 
     character(len=128) :: error_msg
 
-    ! Local pade coefficients for extinction and (ssa, g)
-    real(wp) :: p_e(6), p(5)
+    error_msg = ''
 
-    ! cloud water path (liquid + ice), cloud liquid droplet 
-    ! radius (microns), and cloud ice effective size (microns)
-    real(wp) :: cwp, radliq, radice, factor, fint
+    icergh = this%roughness
+    if (icergh < 1 .or. icergh > 3) then
+      error_msg = 'cloud optics: ' \\
+        'cloud ice surface roughness flag is out of bounds'
+      return
+    endif
+
+  end function error_check
+
+  function make_cloud_mask()
+    ! are values in cloud optics object valid?
+    ! are clouds present?
+    ! populate logical arrays based on whether physical properties 
+    ! pass a series of conditionals
+
+    logical, private, allocatable, dimension(:,:) :: &
+      lCldBool, iCldBool
+
+    ! cloud water path (liquid + ice), effective sizes
+    real(wp) :: cwp, rei, rel
+
+    ! effective size bounds
+    integer, dimension(4) :: liqbounds, icebounds
 
     ! minimum value for cloud quantities
     real(wp), parameter :: cldmin = 1.e-20     
 
-    integer :: index, icol, ilyr, ibnd, irad, irade, irads, iradg
+    icebounds = this%r_eff_bounds_ice_ext
+    liqbounds = this%r_eff_bounds_liq_asy
+    do icol = 1, this%ncol
+      do ilyr = 1, this%nlayers
+        cwp = this%cld_tot_water_path(icol, ilyr)
+        rel = this%r_eff_liq(icol, ilyr)
+        rei = this%r_eff_ice(icol, ilyr)
 
-    ! ice surface roughness (1 = none, 2 = medium, 3 = high)
-    integer :: icergh                          
+        ! liquid cloud logical array conditionals
+        lCldBool(icol, ilyr) = merge(.true., .false., &
+          (this%cldfrac(icol,ilyr) .gt. cldmin .and. cwp .gt. cldmin))
 
-    ! liquid extinction coefficient, single scattering albedo, and 
-    ! asymmetry parameter
-    real(wp) :: extliq(nlayers, nbnd), ssaliq(nlayers, nbnd), &
-                asyliq(nlayers, nbnd)
+        lCldBool(icol, ilyr) = merge(.true., .false., &
+          (rel .gt. 0.0_wp &
+           this%cld_liq_water_path(icol, ilyr) .gt. 0.0_wp) )
 
-    ! ice extinction coefficients, single scattering albedo, and 
-    ! asymmetry parameter
-    real(wp) :: extice(nlayers, nbnd), ssaice(nlayers, nbnd), &
-                asyice(nlayers, nbnd)
+        ! the rel conditional isn't exactly what it was in the 
+        ! original code (2.5 <= rel <= 20), but i'm using the r_eff
+        ! bounds here and not "magic numbers"
+        lCldBool(icol, ilyr) = merge(.true., .false., &
+          (rel .ge. liqbounds[1] .and. rel .le. liqbounds[3]) )
+
+        ! ice cloud logical array conditionals
+        iCldBool(icol, ilyr) = merge(.true., .false., &
+          (this%cldfrac(icol,ilyr) .gt. cldmin .and. cwp .gt. cldmin))
+        iCldBool(icol, ilyr) = merge(.true., .false., &
+          (rei .gt. 0.0_wp &
+           this%cld_ice_water_path(icol, ilyr) .gt. 0.0_wp) )
+        iCldBool(icol, ilyr) = merge(.true., .false., &
+          (rei .ge. icebounds[1] .and. rei .le. icebounds[4]) )
+      enddo ! icol
+    enddo ! ilyr
+
+    this%ice_cloud_present = iCldBool
+    this%liq_cloud_present = lCldBool
+
+  end function make_cloud_mask()
+
+  function calc_optical_properties()
+    ! from cloud optics object, calculate optical properties:
+    !       tau/OD/extinction/ext, 
+    !       omega/w/single scatter albedo/ssa, 
+    !       g/asymmetry/asy
+    ! given the specifications in its attributes
+
+    ! ------- Local -------
+
+    ! cloud effective sizes (microns)
+    real(wp) :: radliq, radice
+
+    integer :: icol, ilyr, ibnd, irade, iradw, iradg
+
+    ! for LUT coefficients and indexing
+    integer, icergh, irad
+    float arg, slope, var1, var2
+
+    ! extinction coefficient, single scattering albedo, and 
+    ! asymmetry arrays for both phases
+    real(wp), dimension(:,:), allocatable :: &
+      extliq, extice, ssaliq, ssaice, asyliq, asyice
 
     ! liquid and ice cloud extinction optical depth, no delta scaling
     real(wp) :: tauliq, tauice
@@ -412,296 +468,264 @@ module mo_cloud_optics
     ! delta scaling extinction OD and single scattering albedo
     real(wp) :: tauliq_del, tauice_del, ssaliq_del, ssaice_del
 
-    ! ------- Definitions -------
+    icergh = this%roughness
 
-    ! ------- Error checking -------
-    error_msg = ''
-    icergh = this%icergh
-    if (icergh < 1 .or. icergh > 3) then
-      error_msg = 'cloud optics: ' \\
-        'cloud ice surface roughness flag is out of bounds'
-      return
-    endif
-
-    ! RP comments: 
-    ! As per all other RRTMGP examples, the validity of input data 
-    ! should be checked the outside computational loop. That means 
-    ! checking that sizes are in range, values are positive, etc. 
-    !
-    ! One could also compute a logical "cloud present" mask in this 
-    ! loop and use it below.  
-    !   
-    ! No magic numbers. When checking validity of e.g. size refer to 
-    ! the size regime arrays. 
-
-    ! RP comments
-    ! Some (many?) of these values will be replaced. Better to use 
-    ! merge() in loops below. 
-
-    ! Initialize
-    extliq(:,:) = 0.0_wp
-    ssaliq(:,:) = 1.0_wp
-    asyliq(:,:) = 0.0_wp
-    extice(:,:) = 0.0_wp
-    ssaice(:,:) = 1.0_wp
-    asyice(:,:) = 0.0_wp
-
-    select type(cloud_optical_props)
-      type is (ty_cloud_optical_props_1scl)
-      cloud_optical_props%taucld(:,:,:) = 0.0_wp
-      type is (ty_cloud_optical_props_2str)
-        cloud_optical_props%taucld(:,:,:) = 0.0_wp
-        cloud_optical_props%ssacld(:,:,:) = 1.0_wp
-        cloud_optical_props%asycld(:,:,:) = 0.0_wp
-      type is (ty_cloud_optical_props_nstr)
-        cloud_optical_props%taucld(:,:,:) = 0.0_wp
-        cloud_optical_props%ssacld(:,:,:) = 1.0_wp
-        cloud_optical_props%pcld(:,:,:,:) = 0.0_wp
-    end select
-
-    ! Main column loop
     do icol = 1, this%ncol
-
-    ! Cloud optical properties from Pade coefficients
-
       do ilyr = 1, this%nlayers
-        cwp = this%ciwp(icol,ilyr) + this%clwp(icol,ilyr)
-        if (this%cldfrac(icol,ilyr) .gt. cldmin .and. &
-            cwp .gt. cldmin) then
+        ! liquid
+        if (this%liq_cloud_present(icol, ilyr)) then
+          radliq = this%r_eff_liq(icol, ilyr)
 
-          ! Derive optical properties from Pade functions 
-          ! Original Pade formulations for EXT, SSA, G
+          do ibnd = 1, this%nband
+            if (this%do_pade) then
+              ! determine index of effective size domain in which 
+              ! radliq exists
+              irade = this%get_irad(radliq, 'liq', this%is_lw, 'ext')
+              iradw = this%get_irad(radliq, 'liq', this%is_lw, 'ssa')
+              iradg = this%get_irad(radliq, 'liq', this%is_lw, 'asy')
 
-          ! Liquid
-          radliq = this%rel(icol,ilyr)
-          if (radliq .gt. 0.0_wp .and. &
-              this%clwp(icol,ilyr) .gt. 0.0_wp) then 
+              ! compute ext, ssa, and asy using Pade approximation
+              ! PADE FUNCTIONS WILL CHANGE EVENTUALLY
+              extliq(ilyr, ibnd) = this%pade_ext(&
+                this%pade_extliq(:, irade, ibnd), radliq)
+              ssaliq(ilyr, ibnd) = this%pade_ssa(&
+                this%pade_ssaliq(:, iradw, ibnd), radliq)
+              asyliq(ilyr, ibnd) = this%pade_asy(&
+                this%pade_asyliq(:, iradg, ibnd), radliq)
+            else
+              ! not entirely sure about these arithmetic, but i think
+              ! this is pretty much what was in the original code
+              arg = radliq - 1.5_wp
+              irad = int(arg)
+              slope = arg - real(irad)
 
-            ! For liquid OP, particle size is limited to 2.5-20.0 
-            ! microns (LW only?)
-            if (radliq .lt. 2.5_wp .or. radliq .gt. 20.0_wp) then 
-              error_msg = 'cloud optics: ' \\
-                'liquid effective radius is out of bounds'
-              return
-            endif
+              ! compute ext, ssa, and asy by linearly interpolating
+              ! to LUT data
+              var1 = this%lut_extliq(ibnd, irad)
+              var2 = this%lut_extliq(ibnd, irad+1)
+              extliq(ilyr, ibnd) = slope * (var2-var1) + var1
 
-            ! Define coefficient particle size regime for 
-            ! current size: extinction, ssa
-            irade = this%get_irad(&
-              radliq, 'liq', this%is_lw, 'ext')
-            irads = this%get_irad(&
-              radliq, 'liq', this%is_lw, 'ssa')
-            iradg = this%get_irad(&
-              radliq, 'liq', this%is_lw, 'asy')
+              var1 = this%lut_ssaliq(ibnd, irad)
+              var2 = this%lut_ssaliq(ibnd, irad+1)
+              ssaliq(ilyr, ibnd) = slope * (var2-var1) + var1
 
-            do ibnd = 1, this%nband
-              extliq(ilyr,ibnd) = this%pade_ext(&
-                this%pade_extliq(ibnd,irade,:), radliq)
-              ssaliq(ilyr,ibnd) = this%pade_ssa(&
-                this%pade_ssaliq(ibnd,irads,:), radliq)
-              asyliq(ilyr,ibnd) = this%pade_asy(&
-                this%pade_asyliq(ibnd,iradg,:), radliq)
-            enddo
-          endif ! radliq provision
+              var1 = this%lut_asyliq(ibnd, irad)
+              var2 = this%lut_asyliq(ibnd, irad+1)
+              asyliq(ilyr, ibnd) = slope * (var2-var1) + var1
+            endif ! Pade liquid
+          enddo ! band
+        else
+          ! fill values if no cloud present
+          extliq(ilyr,ibnd) = 0.0_wp
+          ssaliq(ilyr,ibnd) = 0.0_wp
+          asyliq(ilyr,ibnd) = 0.0_wp
+        endif ! liquid cloud
 
-          ! Ice
-          radice = this%rei(icol,ilyr)
-          if (radice .gt. 0.0_wp .and. &
-              this%ciwp(icol,ilyr) .gt. 0.0_wp) then 
+        ! Ice
+        if (this%liq_cloud_present(icol, ilyr)) then
+          radice = this%r_eff_ice(icol,ilyr)
 
-            ! For Yang (2013) ice OP, particle size is limited to 
-            ! 10.0-180.0 microns (LW only?)
-            if (radice .lt. 10.0_wp .or. radice .gt. 180.0_wp) then
-              error_msg = &
-                'cloud optics: ice effective radius is out of bounds'
-              return
-            endif
+          do ibnd = 1, nband
+            if (this%do_pade) then
+              ! determine index of effective size domain in which 
+              ! radliq exists
+              irade = this%get_irad(radice, 'ice', this%is_lw, 'ext')
+              iradw = this%get_irad(radice, 'ice', this%is_lw, 'ssa')
+              iradg = this%get_irad(radice, 'ice', this%is_lw, 'asy')
 
-            ! Define coefficient particle size regime for current 
-            ! size: extinction, ssa
-            irade = this%get_irad(&
-              radice, 'ice', this&is_lw, 'ext')
-            irads = this%get_irad(&
-              radice, 'ice', this&is_lw, 'ssa')
-            iradg = this%get_irad(&
-              radice, 'ice', this&is_lw, 'asy')
-
-            do ibnd = 1, nband
               ! Derive optical properties for selected ice roughness
-              extice(ilyr,ibnd) = this%pade_ext(&
-                this%pade_extice(ibnd,irade,:,icergh), radice)
-              ssaice(ilyr,ibnd) = this%pade_ssa(&
-                this%pade_ssaice(ibnd,irads,:,icergh), radice)
-              asyice(ilyr,ibnd) = this%pade_asy(&
-                this%pade_asyice(ibnd,iradg,:,icergh), radice)
-            enddo ! end band loop
-          endif ! radice
-         endif ! cldfrac and cwp provision
+              extice(ilyr, ibnd) = this%pade_ext(&
+                this%pade_extice(icergh, :, irade, ibnd), radice)
+              ssaice(ilyr, ibnd) = this%pade_ssa(&
+                this%pade_ssaice(icergh, :, iradw, ibnd), radice)
+              asyice(ilyr, ibnd) = this%pade_asy(&
+                this%pade_asyice(icergh, :, iradg, ibnd), radice)
+            else
+              arg = radice / 10.0_wp
+              irad = int(arg)
+              slope = arg - real(irad)
+
+              ! compute ext, ssa, and asy by linearly interpolating
+              ! to LUT data
+              var1 = this%lut_extice(icergh, ibnd, irad)
+              var2 = this%lut_extice(icergh, ibnd, irad+1)
+              extliq(ilyr, ibnd) = slope * (var2-var1) + var1
+
+              var1 = this%lut_ssaice(icergh, ibnd, irad)
+              var2 = this%lut_ssaice(icergh, ibnd, irad+1)
+              ssaliq(ilyr, ibnd) = slope * (var2-var1) + var1
+
+              var1 = this%lut_asyice(icergh, ibnd, irad)
+              var2 = this%lut_asyice(icergh, ibnd, irad+1)
+              asyliq(ilyr, ibnd) = slope * (var2-var1) + var1
+            endif ! Pade ice
+          enddo ! end band loop
+        else
+          ! fill values if no cloud present
+          extliq(ilyr, ibnd) = 0.0_wp
+          ssaliq(ilyr, ibnd) = 0.0_wp
+          asyliq(ilyr, ibnd) = 0.0_wp
+        endif ! liquid cloud
+
+        ! Combine liquid and ice contributions into total cloud 
+        ! optical properties
+        ! by now, the calculations are independent of the path we 
+        ! used to get here (Pade or LUT)
+        do ibnd = 1, this%nbnd
+          tauliq = this%cld_liq_water_path(icol, ilyr) * &
+            extliq(ilyr, ibnd)
+          tauice = this%cld_ice_water_path(icol, ilyr) * &
+            extice(ilyr, ibnd)
+
+          ! still doing this provision?
+          !if (tauice == 0.0_wp .and. tauliq == 0.0_wp) then
+          !  error_msg = &
+          !    'cloud optics: cloud optical depth is zero'
+          !  return
+          !endif
+
+          if (this%delta_scale) then
+            ! LW and SW with no delta scaling looked the same to me
+            ! so i put them in the same block
+            scatliq = ssaliq(ilyr, ibnd) * tauliq
+            scatice = ssaice(ilyr, ibnd) * tauice
+
+            select type(this)
+              type is (ty_cloud_optics_band_1scl)
+                this%tau(icol, ilyr, ibnd) = tauice + tauliq
+              type is (ty_cloud_optics_band_2str)
+                this%tau(icol, ilyr, ibnd) = tauice + tauliq
+                this%ssa(icol, ilyr, ibnd) = (scatice + scatliq) / &
+                  this%tau(icol, ilyr, ibnd)
+                this%asy(icol, ilyr, ibnd) = &
+                  (scatice * asyice(ilyr, ibnd) + &
+                  (scatliq * asyliq(ilyr, ibnd))) / &
+                  (scatice + scatliq)
+              type is (ty_cloud_optics_band_nstr)
+                this%tau(icol, ilyr, ibnd) = tauice + tauliq
+                this%ssa(icol, ilyr, ibnd) = (scatice + scatliq) / &
+                  this%tau(icol, ilyr, ibnd)
+                asycld = (scatice * asyice(ilyr, ibnd) + &
+                  (scatliq * asyliq(ilyr, ibnd))) / &
+                  (scatice + scatliq)
+                this%phi(1, icol, ilyr, ibnd) = 1.0_wp
+                this%phi(2, icol, ilyr, ibnd) = asycld
+                this%phi(3, icol, ilyr, ibnd) = asycld * asycld
+            end select
+          else
+            ! SHORTWAVE, delta-scaling
+            ! no quality assurance yet on whether i got the formulas
+            ! correct (should probably find a reference for these)
+            forwliq = asyliq(ilyr, ibnd) * asyliq(ilyr, ibnd)
+            forwice = asyice(ilyr, ibnd) * asyice(ilyr, ibnd)
+            tauliq_del = (1.0_wp - forwliq * ssaliq(ilyr, ibnd)) * &
+              tauliq
+            tauice_del = (1.0_wp - forwice * ssaice(ilyr, ibnd)) * &
+              tauice
+
+            select type(this)
+              type is (ty_cloud_optics_band_1scl)
+                this%tau(icol, ilyr, ibnd) = tauliq_del + tauice_del
+              type is (ty_cloud_optics_band_2str)
+                this%tau(icol, ilyr, ibnd) = tauliq_del + tauice_del
+                ssaliq_del = ssaliq(ilyr, ibnd) * &
+                  (1._wp - forwliq) / &
+                  (1._wp - forwliq * ssaliq(ilyr, ibnd))
+                ssaice_del = ssaice(ilyr, ibnd) * &
+                  (1._wp - forwice) / &
+                  (1._wp - forwice * ssaice(ilyr, ibnd))
+                scatliq = ssaliq_del * tauliq_del
+                scatice = ssaice_del * tauice_del
+                this%ssa(icol, ilyr, ibnd) = (scatliq + scatice) / &
+                  this%tau(icol,ilyr,ibnd)
+                this%asy(icol, ilyr, ibnd) = &
+                  (scatice * (asyice(ilyr, ibnd) - forwice) / &
+                  (1._wp - forwice) + &
+                  scatliq * (asyliq(ilyr, ibnd) - forwliq) / &
+                  (1._wp - forwliq)) / (scatice + scatliq)
+              type is (ty_cloud_optics_band_nstr)
+                this%tau(icol,ilyr,ibnd) = tauliq_del + tauice_del
+                ssaliq_del = ssaliq(ilyr, ibnd) * &
+                  (1._wp - forwliq) / &
+                  (1._wp - forwliq * ssaliq(ilyr, ibnd))
+                ssaice_del = ssaice(ilyr, ibnd) * &
+                  (1._wp - forwice) / &
+                  (1._wp - forwice * ssaice(ilyr, ibnd))
+                scatliq = ssaliq_del * tauliq_del
+                scatice = ssaice_del * tauice_del
+                this%ssa(icol,ilyr,ibnd) = (scatliq + scatice) / &
+                  this%tau(icol,ilyr,ibnd)
+                asycld = &
+                  (scatliq * (asyliq(ilyr, ibnd) - forwliq) / &
+                  (1._wp - forwliq) + &
+                  scatice * (asyice(ilyr,ibnd) - forwice) / &
+                  (1._wp - forwice)) / (scatliq + scatice)
+                this%phi(1,icol,ilyr,ibnd) = 1.0_wp
+                this%phi(2,icol,ilyr,ibnd) = asycld
+                this%phi(3,icol,ilyr,ibnd) = 0.0_wp
+            end select
+          endif ! LW/SW
+        enddo ! band loop
       enddo ! End layer loop
     enddo ! End column loop
-
-    ! Combine liquid and ice contributions into total cloud 
-    ! optical properties
-    do icol = 1, this%ncol
-      do ilyr = 1, this%nlayers
-        cwp = ciwp(icol,ilyr) + clwp(icol,ilyr)
-        if (this%cldfrac(icol,ilyr) .gt. cldmin .and. &
-            cwp .gt. cldmin) then 
-
-          do ibnd = 1, this%nbnd
-            tauice = ciwp(icol,ilyr) * extice(ilyr,ibnd)
-            tauliq = clwp(icol,ilyr) * extliq(ilyr,ibnd)
-
-            if (tauice == 0.0_wp .and. tauliq == 0.0_wp) then
-              error_msg = &
-                'cloud optics: cloud optical depth is zero'
-              return
-            endif
-
-            if this%is_lw .eq. 1 then
-              ! LONGWAVE NO DSCALE
-              scatice = ssaice(ilyr,ibnd) * tauice
-              scatliq = ssaliq(ilyr,ibnd) * tauliq
-
-              select type(cloud_optical_props)
-                type is (ty_cloud_optical_props_1scl)
-                  cloud_optical_props%taucld(icol,ilyr,ibnd) = &
-                    tauice + tauliq
-                type is (ty_cloud_optical_props_2str)
-                  cloud_optical_props%taucld(icol,ilyr,ibnd) = &
-                    tauice + tauliq
-                  cloud_optical_props%ssacld(icol,ilyr,ibnd) = &
-                    (scatice + scatliq) / &
-                    cloud_optical_props%taucld(icol,ilyr,ibnd)
-                  cloud_optical_props%asycld(icol,ilyr,ibnd) = &
-                    (scatice * asyice(ilyr,ibnd) + &
-                    (scatliq * asyliq(ilyr,ibnd))) / &
-                    (scatice + scatliq)
-                type is (ty_cloud_optical_props_nstr)
-                  if (clwp(icol,ilyr) .gt. 0.0_wp) then 
-                    error_msg = 'cloud optics: n-stream option ' \\
-                      'not available in longwave for liquid clouds'
-                    return
-                  else
-                    cloud_optical_props%taucld(icol,ilyr,ibnd) = &
-                      tauice + tauliq
-                    cloud_optical_props%ssacld(icol,ilyr,ibnd) = &
-                      (scatice + scatliq) / & 
-                      cloud_optical_props%taucld(icol,ilyr,ibnd)
-                    asycld = &
-                      (scatice * asyice(ilyr,ibnd) + &
-                      (scatliq * asyliq(ilyr,ibnd))) / &
-                      (scatice + scatliq)
-                    cloud_optical_props%pcld(1,icol,ilyr,ibnd) = &
-                      1.0_wp
-                    cloud_optical_props%pcld(2,icol,ilyr,ibnd) = &
-                      asycld
-                    cloud_optical_props%pcld(3,icol,ilyr,ibnd) = &
-                      asycld**2
-                  endif ! clwp provision
-              end select
-            else
-              ! SHORTWAVE
-              forwliq = asyliq(ilyr,ibnd)**2
-              forwice = asyice(ilyr,ibnd)**2
-              tauliq_del = (1.0_wp - forwliq * ssaliq(ilyr,ibnd)) * &
-                tauliq
-              tauice_del = (1.0_wp - forwice * ssaice(ilyr,ibnd)) * &
-                tauice
-
-              select type(cloud_optical_props)
-                type is (ty_cloud_optical_props_1scl)
-                  cloud_optical_props%taucld(icol,ilyr,ibnd) = &
-                    tauliq_del + tauice_del
-                type is (ty_cloud_optical_props_2str)
-                  cloud_optical_props%taucld(icol,ilyr,ibnd) = &
-                    tauliq_del + tauice_del
-                  ssaliq_del = &
-                    ssaliq(ilyr,ibnd) * (1._wp - forwliq) / &
-                    (1._wp - forwliq * ssaliq(ilyr,ibnd))
-                  ssaice_del = &
-                    ssaice(ilyr,ibnd) * (1._wp - forwice) / &
-                    (1._wp - forwice * ssaice(ilyr,ibnd))
-                  scatliq = ssaliq_del * tauliq_del
-                  scatice = ssaice_del * tauice_del
-                  cloud_optical_props%ssacld(icol,ilyr,ibnd) = &
-                    (scatliq + scatice) / &
-                    cloud_optical_props%taucld(icol,ilyr,ibnd)
-                  cloud_optical_props%asycld(icol,ilyr,ibnd) = &
-                    (scatice * (asyice(ilyr,ibnd) - forwice) / &
-                    (1._wp - forwice) + &
-                    scatliq * (asyliq(ilyr,ibnd) - forwliq) / &
-                    (1._wp - forwliq)) / &
-                    (scatice + scatliq)
-                type is (ty_cloud_optical_props_nstr)
-                  cloud_optical_props%taucld(icol,ilyr,ibnd) = &
-                    tauliq_del + tauice_del
-                  ssaliq_del = ssaliq(ilyr,ibnd) * &
-                               (1._wp - forwliq) / &
-                               (1._wp - forwliq * ssaliq(ilyr,ibnd))
-                  ssaice_del = ssaice(ilyr,ibnd) * &
-                               (1._wp - forwice) / &
-                               (1._wp - forwice * ssaice(ilyr,ibnd))
-                  scatliq = ssaliq_del * tauliq_del
-                  scatice = ssaice_del * tauice_del
-                  cloud_optical_props%ssacld(icol,ilyr,ibnd) = &
-                    (scatliq + scatice) / &
-                     cloud_optical_props%taucld(icol,ilyr,ibnd)
-                  asycld = &
-                    (scatliq * (asyliq(ilyr,ibnd) - forwliq) / &
-                    (1._wp - forwliq) + &
-                    scatice * (asyice(ilyr,ibnd) - forwice) / &
-                    (1._wp - forwice)) / &
-                    (scatliq + scatice)
-                  cloud_optical_props%pcld(1,icol,ilyr,ibnd) = 1.0_wp
-                  cloud_optical_props%pcld(2,icol,ilyr,ibnd) = asycld
-                  cloud_optical_props%pcld(3,icol,ilyr,ibnd) = 0.0_wp
-                end select
-              else
-                select type(cloud_optical_props)
-                  type is (ty_cloud_optical_props_1scl)
-                    cloud_optical_props%taucld(icol,ilyr,ibnd) = &
-                      tauice + tauliq
-                  type is (ty_cloud_optical_props_2str)
-                    cloud_optical_props%taucld(icol,ilyr,ibnd) = &
-                      tauice + tauliq
-                    ! Pernak: this is the only substantial difference 
-                    ! with LW (no delta-scaling) -- can't it just go 
-                    ! outside the select block? how would 2-str even
-                    ! work if scatice and scatliq are defined here?
-                    scatice = ssaice(ilyr,ibnd) * tauice
-                    scatliq = ssaliq(ilyr,ibnd) * tauliq
-
-                    cloud_optical_props%ssacld(icol,ilyr,ibnd) = &
-                      (scatice + scatliq) / &
-                       cloud_optical_props%taucld(icol,ilyr,ibnd)
-                    cloud_optical_props%asycld(icol,ilyr,ibnd) = &
-                      (scatice * asyice(ilyr,ibnd) + &
-                      (scatliq * asyliq(ilyr,ibnd))) / &
-                      (scatice + scatliq)
-                  type is (ty_cloud_optical_props_nstr)
-                    cloud_optical_props%taucld(icol,ilyr,ibnd) = &
-                      tauice + tauliq
-                    cloud_optical_props%ssacld(icol,ilyr,ibnd) = &
-                      (scatice + scatliq) / &
-                      cloud_optical_props%taucld(icol,ilyr,ibnd)
-                    asycld = &
-                      (scatice * asyice(ilyr,ibnd) + &
-                      (scatliq * asyliq(ilyr,ibnd))) / &
-                      (scatice + scatliq)
-                    cloud_optical_props%pcld(1,icol,ilyr,ibnd) = &
-                      1.0_wp
-                    cloud_optical_props%pcld(2,icol,ilyr,ibnd) = &
-                      asycld
-                    cloud_optical_props%pcld(3,icol,ilyr,ibnd) = 
-                      asycld**2
-                end select
-              endif ! SW delta scaling
-            endif ! LW/SW
-          enddo ! band loop
-        endif ! cldmin provision
-      enddo ! layer loop
-    enddo ! column loop
   end function calc_optical_properties
+
+!  function get_irad(rad,phase,regime,param)
+!    real(wp), intent(in) :: rad             ! particle radius
+!    character(len=3), intent(in) :: phase   ! liq/ice
+!    character(len=2), intent(in) :: regime  ! lw/sw
+!    character(len=3), intent(in) :: param   ! ext/ssa/asy
+!    integer :: get_irad                     ! irad index
+
+!    ! Local variables
+!    integer :: irad
+!    real(wp), dimension(4) :: sizreg
+
+!    ! Liq/LW
+!    if (phase .eq. 'liq' .and. regime .eq. 'lw') then
+!      if (param .eq. 'ext' .or. param .eq. 'ssa') &
+!        sizreg = this%r_eff_bounds_liq_ext(:)
+!      if (param .eq. 'asy') sizreg = this%r_eff_bounds_liq_ext(:)
+
+!      do irad = 1, 2 
+!        if (rad .gt. sizreg(irad) .and. rad .le. sizreg(irad+1)) &
+!          get_irad = irad
+!      enddo
+!    endif
+
+!    ! Ice/LW
+!    if (phase .eq. 'ice' .and. regime .eq. 'lw') then
+!      sizreg = cloud_spec%pade_sizreg_icelw(1,:)
+!      if (cloud_spec%icergh .eq. 1 .and. &
+!          param .eq. 'ssa' .or. param .eq. 'asy') &
+!           sizreg = cloud_spec%pade_sizreg_icelw(2,:)
+!         do irad = 1, 3 
+!            if (rad .gt. sizreg(irad) .and. rad .le. sizreg(irad+1)) &
+!              get_irad = irad
+!         enddo
+!      endif
+
+!    ! Liq/SW - ext, ssa
+!    if (phase .eq. 'liq' .and. regime .eq. 'sw') then
+!      if (param .eq. 'ext' .or. param .eq. 'ssa') &
+!        sizreg = cloud_spec%pade_sizreg_liqsw(1,:)
+!      if (param .eq. 'asy') sizreg = cloud_spec%pade_sizreg_liqsw(2,:)
+!      do irad = 1, 2 
+!         if (rad .gt. sizreg(irad) .and. &
+!           rad .le. sizreg(irad+1)) get_irad = irad
+!      enddo
+!    endif
+
+!    ! Ice/SW
+!    if (phase .eq. 'ice' .and. regime .eq. 'sw') then
+!      sizreg = cloud_spec%pade_sizreg_icesw(1,:)
+!      do irad = 1, 3 
+!         if (rad .gt. sizreg(irad) .and. rad .le. sizreg(irad+1)) &
+!           get_irad = irad
+!      enddo
+!    endif
+
+!    end function get_irad
+
 end module mo_cloud_optics
 
