@@ -180,8 +180,8 @@ module mo_cloud_optics
     elseif (method .eq. "2str") then
       class(ty_cloud_optics_band_2str), intent(out) :: this
     elseif (method .eq. "nstr") then
-      class(ty_cloud_optics_band_nstr), intent(out) :: this
     else
+      class(ty_cloud_optics_band_nstr), intent(out) :: this
       err_msg = "Please specify '1scl', '2str', or 'nstr' for method"
       call stop_on_err(err_msg)
     endif
@@ -250,7 +250,7 @@ module mo_cloud_optics
     ! ---------------------------------------------------------------
   end function init
 
-  function load_cloud_optics()
+  function load_cloud_optics(this)
     ! from an input netCDF, load cloud optics data into 
     ! class attributes (should work regardless of the spectral domain 
     ! and Pade-LUT formalism)
@@ -361,7 +361,7 @@ module mo_cloud_optics
     ncid = nf90_close(ncid)
   end function load_cloud_optics
 
-  function error_check()
+  function error_check(this)
     ! check the data for any invalid values
 
     character(len=128) :: error_msg
@@ -377,7 +377,7 @@ module mo_cloud_optics
 
   end function error_check
 
-  function make_cloud_mask()
+  function make_cloud_mask(this)
     ! are values in cloud optics object valid?
     ! are clouds present?
     ! populate logical arrays based on whether physical properties 
@@ -433,7 +433,7 @@ module mo_cloud_optics
 
   end function make_cloud_mask()
 
-  function calc_optical_properties()
+  function calc_optical_properties(this)
     ! from cloud optics object, calculate optical properties:
     !       tau/OD/extinction/ext, 
     !       omega/w/single scatter albedo/ssa, 
@@ -480,9 +480,9 @@ module mo_cloud_optics
             if (this%do_pade) then
               ! determine index of effective size domain in which 
               ! radliq exists
-              irade = this%get_irad(radliq, 'liq', this%is_lw, 'ext')
-              iradw = this%get_irad(radliq, 'liq', this%is_lw, 'ssa')
-              iradg = this%get_irad(radliq, 'liq', this%is_lw, 'asy')
+              irade = this%get_irad(radliq, .true., 'ext')
+              iradw = this%get_irad(radliq, .true., 'ssa')
+              iradg = this%get_irad(radliq, .true., 'asy')
 
               ! compute ext, ssa, and asy using Pade approximation
               ! PADE FUNCTIONS WILL CHANGE EVENTUALLY
@@ -529,9 +529,9 @@ module mo_cloud_optics
             if (this%do_pade) then
               ! determine index of effective size domain in which 
               ! radliq exists
-              irade = this%get_irad(radice, 'ice', this%is_lw, 'ext')
-              iradw = this%get_irad(radice, 'ice', this%is_lw, 'ssa')
-              iradg = this%get_irad(radice, 'ice', this%is_lw, 'asy')
+              irade = this%get_irad(radice, .false., 'ext')
+              iradw = this%get_irad(radice, .false., 'ssa')
+              iradg = this%get_irad(radice, .false., 'asy')
 
               ! Derive optical properties for selected ice roughness
               extice(ilyr, ibnd) = this%pade_ext(&
@@ -670,62 +670,35 @@ module mo_cloud_optics
     enddo ! End column loop
   end function calc_optical_properties
 
-!  function get_irad(rad,phase,regime,param)
-!    real(wp), intent(in) :: rad             ! particle radius
-!    character(len=3), intent(in) :: phase   ! liq/ice
-!    character(len=2), intent(in) :: regime  ! lw/sw
-!    character(len=3), intent(in) :: param   ! ext/ssa/asy
-!    integer :: get_irad                     ! irad index
+  function get_irad(this, rad, is_liquid, param)
+    real(wp), intent(in) :: rad             ! particle radius
+    logical, intent(in) :: is_liquid
+    character(len=3), intent(in) :: param   ! ext/ssa/asy
+    integer :: get_irad                     ! irad index
 
-!    ! Local variables
-!    integer :: irad
-!    real(wp), dimension(4) :: sizreg
+    ! Local variables
+    integer :: irad, nrad
+    real(wp), dimension(4) :: sizreg
 
-!    ! Liq/LW
-!    if (phase .eq. 'liq' .and. regime .eq. 'lw') then
-!      if (param .eq. 'ext' .or. param .eq. 'ssa') &
-!        sizreg = this%r_eff_bounds_liq_ext(:)
-!      if (param .eq. 'asy') sizreg = this%r_eff_bounds_liq_ext(:)
+    if (phase .eq. 'liq') nrad = 2 else nrad = 3
 
-!      do irad = 1, 2 
-!        if (rad .gt. sizreg(irad) .and. rad .le. sizreg(irad+1)) &
-!          get_irad = irad
-!      enddo
-!    endif
+    if (is_liquid) then
+      if (param .eq. 'ext') sizreg = this%r_eff_bounds_liq_ext(:)
+      if (param .eq. 'ssa') sizreg = this%r_eff_bounds_liq_ssa(:)
+      if (param .eq. 'asy') sizreg = this%r_eff_bounds_liq_ext(:)
+    else
+      if (param .eq. 'ext') sizreg = this%r_eff_bounds_ice_ext(:)
+      if (param .eq. 'ssa') sizreg = this%r_eff_bounds_ice_ssa(:)
+      if (param .eq. 'asy') sizreg = this%r_eff_bounds_ice_ext(:)
+      ! roughness conditional? r_eff_bounds_ice_* are identical...
+    endif ! phase
 
-!    ! Ice/LW
-!    if (phase .eq. 'ice' .and. regime .eq. 'lw') then
-!      sizreg = cloud_spec%pade_sizreg_icelw(1,:)
-!      if (cloud_spec%icergh .eq. 1 .and. &
-!          param .eq. 'ssa' .or. param .eq. 'asy') &
-!           sizreg = cloud_spec%pade_sizreg_icelw(2,:)
-!         do irad = 1, 3 
-!            if (rad .gt. sizreg(irad) .and. rad .le. sizreg(irad+1)) &
-!              get_irad = irad
-!         enddo
-!      endif
+    do irad = 1, nrad
+      if (rad .gt. sizreg(irad) .and. rad .le. sizreg(irad+1)) &
+        get_irad = irad
+    enddo
 
-!    ! Liq/SW - ext, ssa
-!    if (phase .eq. 'liq' .and. regime .eq. 'sw') then
-!      if (param .eq. 'ext' .or. param .eq. 'ssa') &
-!        sizreg = cloud_spec%pade_sizreg_liqsw(1,:)
-!      if (param .eq. 'asy') sizreg = cloud_spec%pade_sizreg_liqsw(2,:)
-!      do irad = 1, 2 
-!         if (rad .gt. sizreg(irad) .and. &
-!           rad .le. sizreg(irad+1)) get_irad = irad
-!      enddo
-!    endif
-
-!    ! Ice/SW
-!    if (phase .eq. 'ice' .and. regime .eq. 'sw') then
-!      sizreg = cloud_spec%pade_sizreg_icesw(1,:)
-!      do irad = 1, 3 
-!         if (rad .gt. sizreg(irad) .and. rad .le. sizreg(irad+1)) &
-!           get_irad = irad
-!      enddo
-!    endif
-
-!    end function get_irad
+  end function get_irad
 
 end module mo_cloud_optics
 
