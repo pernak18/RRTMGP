@@ -38,11 +38,6 @@ module mo_cloud_optics
       read_3d_field, read_4d_field
   end interface
 
-  interface write_field 
-    module procedure write_1d_int_field, write_2d_int_field, &
-      write_1d_field, write_2d_field, write_3d_field, write_4d_field
-  end interface 
-
   ! ---------------------------------------------------------------
   ! Attributes for entire class
 
@@ -122,7 +117,7 @@ module mo_cloud_optics
   function init(this, gas_spec, cld_fraction, &
     play, plev, tlay, tsfc, &
     cld_liq_water_path, cld_ice_water_path, ice_rough, &
-    r_eff_liq, r_eff_ice, method, is_lw, is_pade)
+    r_eff_liq, r_eff_ice, method, is_lw, is_pade, delta_scale)
 
     ! initialization of the cloud_optics class
     ! ---------------------------------------------------------------
@@ -150,6 +145,7 @@ module mo_cloud_optics
     !   is_pade -- boolean, is the Pade approximation being used in
     !     the optical property calculations? (otherwise LookUp Table
     !     -- LUT -- data are used)
+    !   delta_scale -- boolean
     ! ---------------------------------------------------------------
 
     ! ---------------------------------------------------------------
@@ -159,11 +155,13 @@ module mo_cloud_optics
 
     ! ---------------------------------------------------------------
     ! User input
+    ! what should i be doing with gas_spec? i never use it
     class(ty_gas_optics_specification), intent(in) :: gas_spec
 
     real(wp), dimension(:,:), intent(in) :: play, plev, tlay
     real(wp), dimension(:), intent(in) :: tsfc
     integer, intent(in) :: icergh
+    logical, intent(in) :: is_lw, do_pade, delta_scale
 
     real(wp), intent(in), dimension(:,:), allocatable :: &
       cld_fraction, cld_liq_water_path, cld_ice_water_path, &
@@ -188,12 +186,6 @@ module mo_cloud_optics
     ! ---------------------------------------------------------------
 
     ! ---------------------------------------------------------------
-    ! Intermediates (neither input nor output)
-    character(len=*) :: extliq_str, ssaliq_str, asyliq_str, &
-      extice_str, ssaice_str, asyice_str
-    ! ---------------------------------------------------------------
-
-    ! ---------------------------------------------------------------
     ! Attribute assignments
     ! dimensions
     this%ncol = size(play, 1)
@@ -205,6 +197,7 @@ module mo_cloud_optics
     this%do_lw = is_lw
     this%do_pade = is_pade
 
+    ! can these boolean-dependent assignments be more compact?
     if (is_lw) then
       this%spectral_domain = 'lw'
     else
@@ -217,12 +210,14 @@ module mo_cloud_optics
       this%approx = 'lut'
     endif
 
+    this%delta_scale = delta_scale
+
     this%cld_coeff_file = 'rrtmgp-' // &
       this%spectral_domain // '-inputs-cloud-optics-' // &
       trim(this%approx) //'.nc'
 
     ! physical property arrays
-    ! need to do some data validation on these guys!!
+    ! need to do some validation on these guys in this%error_check!!
     this%cld_fraction = cld_fraction
     this%cld_liq_water_path = cld_liq_water_path
     this%cld_ice_water_path = cld_ice_water_path
@@ -302,19 +297,19 @@ module mo_cloud_optics
       ! i'm declaring these guys with "allocatable"
 
       ! liquid
-      this%pade_extliq  = read_field(&
+      this%pade_extliq  = this%read_field(&
         ncid, extLiqStr, nCoeffExt, nSizeReg, nBand)
-      this%pade_ssaliq  = read_field(&
+      this%pade_ssaliq  = this%read_field(&
         ncid, ssaLiqStr, nCoeffSSA, nSizeReg, nBand)
-      this%pade_asyliq  = read_field(&
+      this%pade_asyliq  = this%read_field(&
         ncid, asyLiqStr, nCoeffAsy, nSizeReg, nBand)
 
       ! ice
-      this%pade_extice  = read_field(&
+      this%pade_extice  = this%read_field(&
         ncid, extIceStr, nRough, nCoeffExt, nSizeReg, nBand)
-      this%pade_ssaice  = read_field(&
+      this%pade_ssaice  = this%read_field(&
         ncid, ssaIceStr, nRough, nCoeffSSA, nSizeReg, nBand)
-      this%pade_asyice  = read_field(&
+      this%pade_asyice  = this%read_field(&
         ncid, asyIceStr, nRough, nCoeffAsy, nSizeReg, nBand)
 
       ! Particle size regimes for Pade formulations
@@ -345,16 +340,19 @@ module mo_cloud_optics
       ! i'm declaring these guys with "allocatable"
 
       ! liquid
-      this%lut_extliq  = read_field(ncid, extLiqStr, nSizeLiq, nBand)
-      this%lut_ssaliq  = read_field(ncid, ssaLiqStr, nSizeLiq, nBand)
-      this%lut_asyliq  = read_field(ncid, asyLiqStr, nSizeLiq, nBand)
+      this%lut_extliq  = &
+        this%read_field(ncid, extLiqStr, nSizeLiq, nBand)
+      this%lut_ssaliq  = &
+        this%read_field(ncid, ssaLiqStr, nSizeLiq, nBand)
+      this%lut_asyliq  = &
+        this%read_field(ncid, asyLiqStr, nSizeLiq, nBand)
 
       ! ice
-      this%lut_extice  = read_field(&
+      this%lut_extice  = this%read_field(&
         ncid, extIceStr, nRough, nBand, nSizeIce)
-      this%lut_ssaice  = read_field(&
+      this%lut_ssaice  = this%read_field(&
         ncid, ssaIceStr, nRough, nBand, nSizeIce)
-      this%lut_asyice  = read_field(&
+      this%lut_asyice  = this%read_field(&
         ncid, asyIceStr, nRough, nBand, nSizeIce)
     endif ! Pade/LUT
 
@@ -485,13 +483,14 @@ module mo_cloud_optics
               iradg = this%get_irad(radliq, .true., 'asy')
 
               ! compute ext, ssa, and asy using Pade approximation
-              ! PADE FUNCTIONS WILL CHANGE EVENTUALLY
-              extliq(ilyr, ibnd) = this%pade_ext(&
-                this%pade_extliq(:, irade, ibnd), radliq)
-              ssaliq(ilyr, ibnd) = this%pade_ssa(&
-                this%pade_ssaliq(:, iradw, ibnd), radliq)
-              asyliq(ilyr, ibnd) = this%pade_asy(&
-                this%pade_asyliq(:, iradg, ibnd), radliq)
+              ! think of how to get rid of these magic numbers (number
+              ! of numerator and denominator terms -- 3 and 2)
+              extliq(ilyr, ibnd) = this%pade(&
+                this%pade_extliq(:, irade, ibnd), radliq, 3, 3)
+              ssaliq(ilyr, ibnd) = 1-this%pade(&
+                this%pade_ssaliq(:, iradw, ibnd), radliq, 3, 2)
+              asyliq(ilyr, ibnd) = this%pade(&
+                this%pade_asyliq(:, iradg, ibnd), radliq, 3, 2)
             else
               ! not entirely sure about these arithmetic, but i think
               ! this is pretty much what was in the original code
@@ -534,12 +533,12 @@ module mo_cloud_optics
               iradg = this%get_irad(radice, .false., 'asy')
 
               ! Derive optical properties for selected ice roughness
-              extice(ilyr, ibnd) = this%pade_ext(&
-                this%pade_extice(icergh, :, irade, ibnd), radice)
-              ssaice(ilyr, ibnd) = this%pade_ssa(&
-                this%pade_ssaice(icergh, :, iradw, ibnd), radice)
-              asyice(ilyr, ibnd) = this%pade_asy(&
-                this%pade_asyice(icergh, :, iradg, ibnd), radice)
+              extice(ilyr, ibnd) = this%pade(&
+                this%pade_extice(icergh,:,irade, ibnd), radice, 3, 3)
+              ssaice(ilyr, ibnd) = 1-this%pade(&
+                this%pade_ssaice(icergh,:,iradw, ibnd), radice, 3, 2)
+              asyice(ilyr, ibnd) = this%pade(&
+                this%pade_asyice(icergh,:,iradg, ibnd), radice, 3, 2)
             else
               arg = radice / 10.0_wp
               irad = int(arg)
@@ -670,7 +669,7 @@ module mo_cloud_optics
     enddo ! End column loop
   end function calc_optical_properties
 
-  function get_irad(this, rad, is_liquid, param)
+  function get_irad(this, rad, is_liquid, param) result(get_irad)
     real(wp), intent(in) :: rad             ! particle radius
     logical, intent(in) :: is_liquid
     character(len=3), intent(in) :: param   ! ext/ssa/asy
@@ -699,6 +698,234 @@ module mo_cloud_optics
     enddo
 
   end function get_irad
+
+  function pade(this, coeff, rEff, n_num, n_den) result(out_pade)
+    ! Pade formulation: Extinction Coefficient 
+    ! (Hogan and Bozzo, ECMWF, TM787, 2016)
+
+    integer, intent(in) :: n_num, n_den
+    integer :: nCoeff = n_num + n_den
+    real(wp), intent(in) :: coeff(nCoeff)
+
+    integer :: idx
+    real(wp) :: numCoeff(n_num), denCoeff(n_den)
+    real(wp) :: num = 0, den = 1, coeffSum = 0, rEffSum = 0
+    real(wp) :: out_pade
+
+    do idx = 1, n_num
+      coeffSum = coeff(idx) * rEffSum
+      num = num + coeffSum
+      rEffSum = rEffSum + rEff
+    enddo
+
+    coeffSum = 0
+    rEffSum = rEff
+    do idx = n_num, nCoeff
+      coeffSum = coeff(idx) * rEffSum
+      den = den + coeffSum
+      rEffSum = rEffSum + rEff
+    enddo
+
+    ! need to validate my calculation!
+    out_pade = num / den
+
+  end function pade()
+
+  subroutine stop_on_err(this, msg)
+    use iso_fortran_env, only : error_unit
+    character(len=*), intent(in) :: msg
+
+    if(msg /= "") then
+      write(error_unit, *) msg
+      stop
+    end if
+  end subroutine
+
+  function get_dim_length(this, ncid, dimname)
+    !
+    ! Get the length of a dimension from an open netCDF file
+    ! This is unfortunately a two-step process
+    ! Pernak: I have not modified this function 
+    ! (except for aesthetic changes and adding "this" argument)
+    !
+    integer,          intent(in) :: ncid
+    character(len=*), intent(in) :: dimname
+    integer :: get_dim_length
+
+    integer :: dimid
+
+    if(nf90_inq_dimid(ncid, trim(dimname), dimid) == NF90_NOERR) then
+      if(nf90_inquire_dimension(&
+        ncid, dimid, len=get_dim_length) /= NF90_NOERR) &
+        get_dim_length = 0
+    else
+      get_dim_length = 0
+    end if
+
+  end function get_dim_length
+
+  function get_data_size(this, ncid, varName, n)
+    !
+    ! Returns the extents of a netcdf variable on disk
+    ! Pernak: I have not modified this function 
+    ! (except for aesthetic changes and adding "this" argument)
+    !
+    integer,          intent(in) :: ncid
+    character(len=*), intent(in) :: varName
+    integer,          intent(in) :: n
+    integer                      :: get_data_size(n)
+
+    integer :: i
+    integer :: varid, ndims, dimids(n)
+
+    get_data_size(n) = -1
+    if(nf90_inq_varid(ncid, trim(varName), varid) /= NF90_NOERR) &
+      call stop_on_err("get_data_size: can't find variable " // &
+      trim(varName))
+
+    if(&
+      nf90_inquire_variable(ncid,varid,ndims=ndims) /= NF90_NOERR) &
+      call stop_on_err(&
+        "get_data_size: can't get information for variable " // &
+        trim(varName))
+
+    if(ndims /= n) &
+      call stop_on_err("get_data_size:  variable " // &
+        trim(varName) // " has the wrong number of dimensions" )
+
+    if(nf90_inquire_variable(ncid, varid, dimids = dimids) /= &
+      NF90_NOERR) &
+      call stop_on_err(&
+        "get_data_size: can't read dimension ids for variable " // &
+        trim(varName))
+
+    do i = 1, n
+      if(nf90_inquire_dimension(ncid, dimids(i), &
+        len=get_data_size(i)) /= NF90_NOERR) &
+        call stop_on_err(&
+          "get_data_size: can't get dimension len for variable " // &
+          trim(varName))
+    end do
+
+  end function get_data_size
+
+  function read_scalar(this, ncid, varName)
+    ! Pernak: I have not modified this function 
+    ! (except for aesthetic changes and adding "this" argument)
+
+    integer,          intent(in) :: ncid
+    character(len=*), intent(in) :: varName
+    real(wp)                     :: read_scalar
+
+    integer :: varid
+
+    if(nf90_inq_varid(ncid, trim(varName), varid) /= NF90_NOERR) &
+      call stop_on_err("read_field: can't find variable " // &
+      trim(varName))
+
+    if(nf90_get_var(ncid, varid, read_scalar)  /= NF90_NOERR) &
+      call stop_on_err("read_field: can't read variable " // &
+      trim(varName))
+
+  end function read_scalar
+
+  function read_1d_field(this, ncid, varName, nx)
+    ! Pernak: I have not modified this function 
+    ! (except for aesthetic changes and adding "this" argument)
+
+    integer,          intent(in) :: ncid
+    character(len=*), intent(in) :: varName
+    integer,          intent(in) :: nx
+    real(wp), dimension(nx)      :: read_1d_field
+
+    integer :: varid
+
+    if(any(get_data_size(ncid, varName, 1) /= [nx])) &
+      call stop_on_err("read_field: variable " // trim(varName) // &
+        " size is inconsistent.")
+
+    if(nf90_inq_varid(ncid, trim(varName), varid) /= NF90_NOERR) &
+      call stop_on_err("read_field: can't find variable " // &
+      trim(varName))
+
+    if(nf90_get_var(ncid, varid, read_1d_field)  /= NF90_NOERR) &
+      call stop_on_err("read_field: can't read variable " // &
+      trim(varName))
+
+  end function read_1d_field
+
+  function read_2d_field(this, ncid, varName, nx, ny)
+    ! Pernak: I have not modified this function 
+    ! (except for aesthetic changes and adding "this" argument)
+
+    integer,          intent(in) :: ncid
+    character(len=*), intent(in) :: varName
+    integer,          intent(in) :: nx, ny
+    real(wp), dimension(nx, ny)  :: read_2d_field
+
+    integer :: varid
+    if(any(get_data_size(ncid, varName, 2) /= [nx, ny])) &
+      call stop_on_err("read_field: variable " // trim(varName) // &
+        " size is inconsistent.")
+
+    if(nf90_inq_varid(ncid, trim(varName), varid) /= NF90_NOERR) &
+      call stop_on_err("read_field: can't find variable " // &
+      trim(varName))
+
+    if(nf90_get_var(ncid, varid, read_2d_field)  /= NF90_NOERR) &
+      call stop_on_err("read_field: can't read variable " // &
+      trim(varName))
+
+  end function read_2d_field
+
+  function read_3d_field(this, ncid, varName, nx, ny, nz)
+    ! Pernak: I have not modified this function 
+    ! (except for aesthetic changes and adding "this" argument)
+
+    integer,          intent(in) :: ncid
+    character(len=*), intent(in) :: varName
+    integer,          intent(in) :: nx, ny, nz
+    real(wp), dimension(nx, ny, nz)  :: read_3d_field
+
+    integer :: varid
+
+    if(any(get_data_size(ncid, varName, 3) /= [nx, ny, nz])) &
+      call stop_on_err("read_field: variable " // trim(varName) // &
+      " size is inconsistent.")
+
+    if(nf90_inq_varid(ncid, trim(varName), varid) /= NF90_NOERR) &
+      call stop_on_err("read_field: can't find variable " // &
+      trim(varName))
+
+    if(nf90_get_var(ncid, varid, read_3d_field)  /= NF90_NOERR) &
+      call stop_on_err("read_field: can't read variable " // &
+      trim(varName))
+
+  end function read_3d_field
+
+  function read_4d_field(this, ncid, varName, nw, nx, ny, nz)
+    ! Pernak: I have not modified this function 
+    ! (except for aesthetic changes and adding "this" argument)
+
+    integer,          intent(in) :: ncid
+    character(len=*), intent(in) :: varName
+    integer,          intent(in) :: nw, nx, ny, nz
+    real(wp), dimension(nw, nx, ny, nz)  :: read_4d_field
+    integer :: varid
+
+    if(any(get_data_size(ncid, varName, 4) /= [nw, nx, ny, nz])) &
+      call stop_on_err("read_field: variable " // trim(varName) // &
+      " size is inconsistent." )
+
+    if(nf90_inq_varid(ncid, trim(varName), varid) /= NF90_NOERR) &
+      call stop_on_err("read_field: can't find variable " // &
+      trim(varName))
+
+    if(nf90_get_var(ncid, varid, read_4d_field)  /= NF90_NOERR) &
+      call stop_on_err("read_field: can't read variable " // &
+      trim(varName))
+
+  end function read_4d_field
 
 end module mo_cloud_optics
 
